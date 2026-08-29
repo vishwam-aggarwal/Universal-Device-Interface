@@ -12,8 +12,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_library(device src/IDevice.cpp)
 target_include_directories(device PUBLIC src)
 
-add_executable(test_device_sink tests/test_device_sink.cpp)
-target_link_libraries(test_device_sink PRIVATE device)
+add_executable(test_device_sink     tests/test_device_sink.cpp)
+add_executable(test_solenoid_device tests/test_solenoid_device.cpp)
+
+target_link_libraries(test_device_sink     PRIVATE device)
+target_link_libraries(test_solenoid_device PRIVATE device)
 
 enable_testing()
-add_test(NAME device_sink COMMAND test_device_sink)
+add_test(NAME device_sink     COMMAND test_device_sink)
+add_test(NAME solenoid_device COMMAND test_solenoid_device)

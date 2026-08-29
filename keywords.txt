@@ -3,6 +3,8 @@
 IDevice	KEYWORD1
 DeviceState	KEYWORD1
 GlobalErrorSink	KEYWORD1
+SolenoidDevice	KEYWORD1
+SolenoidPort	KEYWORD1
 
 # Methods (orange)
 begin	KEYWORD2
@@ -17,6 +19,12 @@ getDeviceName	KEYWORD2
 setGlobalErrorSink	KEYWORD2
 reportError	KEYWORD2
 deviceStateToString	KEYWORD2
+energize	KEYWORD2
+release	KEYWORD2
+clearFault	KEYWORD2
+isEnergized	KEYWORD2
+getOnTimeMs	KEYWORD2
+getMaxOnTimeMs	KEYWORD2
 
 # Constants (also orange)
 OFFLINE	LITERAL1

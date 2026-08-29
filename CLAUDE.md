@@ -18,9 +18,9 @@ introspection, an identity string, a global error sink — and that duplication 
 recurring as more sensor/actuator/orchestrator interfaces get built. Any future interface,
 motion-related or not, does `class IWhatever : public IDevice { ... }` and gets all of it.
 
-There is both a plain Arduino library layer (`src/` + `library.properties`; no examples —
-the README's non-motion worked example is the usage sample) and a desktop CMake/CTest
-harness (`CMakeLists.txt` + `tests/`) — same layout as Universal-Encoder-Interface.
+There is both a plain Arduino library layer (`src/` + `examples/` + `library.properties`)
+and a desktop CMake/CTest harness (`CMakeLists.txt` + `tests/`) — same layout as
+Universal-Encoder-Interface.
 
 **This library depends on nothing. Everything else in the family depends on it.** Don't add
 a dependency here, ever.
@@ -33,11 +33,21 @@ a dependency here, ever.
   script as Universal-Motion-Interface) then `ctest --test-dir build -C Debug
   --output-on-failure`. Builds `src/IDevice.cpp` into a `device` library and runs
   `tests/test_device_sink.cpp`.
-- **Arduino**: nothing here is a sketch, so "compile-verify on target" means compiling a
-  consumer. Quick check without a sibling: drop the README's `SimulatedSolenoid` example
-  into a scratch sketch and `arduino-cli compile --fqbn arduino:avr:uno --warnings all
-  <sketch dir>` (done at creation time: 3240 bytes, zero warnings). This library must be on
-  the Arduino libraries path (it already lives under `Arduino/libraries/`).
+- **Arduino**: `arduino-cli compile --fqbn <fqbn> --warnings all examples/SolenoidDeviceDemo`
+  — compile-verified warning-free on `arduino:renesas_uno:unor4wifi` and `arduino:avr:uno`.
+  This library must be on the Arduino libraries path (it already lives under
+  `Arduino/libraries/`).
+- **Hardware (UNO R4 WiFi)**: `arduino-cli compile --fqbn arduino:renesas_uno:unor4wifi -u
+  -p COM<n> examples/SolenoidDeviceDemo`. Use `compile -u`, not a separate `upload`: the
+  build cache slot is per-sketch, not per-FQBN, so an AVR compile of the same sketch
+  overwrites the R4 `.bin` and a later bare `upload` fails with bossac "No such file or
+  directory". Find the port with `arduino-cli board list` (the R4 enumerates as VID 0x2341
+  / PID 0x1002). The board does **not** reset when a monitor connects (native USB), so the
+  `setup()` output is only visible if you press RESET with the monitor open; `loop()`
+  repeats the whole demo cycle every ~6 s. Verified end-to-end 2026-08-29: sink output
+  `[ERROR] Solenoid/DemoLatch code 2: ...` and the BUSY → ERRORED → IDLE cycle on Serial.
+  `arduino-cli monitor` was unreliable for scripted capture here; a .NET
+  `System.IO.Ports.SerialPort` read from PowerShell worked.
 - **PlatformIO**: reference this repo as a `lib_deps` git dependency; there is no
   `platformio.ini` here.
 - **CI**: `.github/workflows/build.yml` runs the desktop build + ctest on ubuntu and
@@ -69,10 +79,33 @@ a dependency here, ever.
 `IMotorDriver.h` had already pulled it in). Same typedef, so no printer function anywhere
 changes.
 
+**`src/SolenoidDevice.h`** — the shipped sample `IDevice` implementation, deliberately
+non-motion (a coil with an intermittent-duty on-time limit). It is the template for any
+new device: local `Status`/`Error` enums, the state precedence rule, `update()` as a
+protective cutoff, and **both** `reportError()` usages side by side — `ERR_NOT_ONLINE` is
+reported but not latched (a diagnostic), `ERR_ON_TIME_EXCEEDED` is force-released and
+latched until `clearFault()`. Hardware I/O and time are injected through
+`SolenoidPort { writeCoil, nowMs, ctx }` so the identical class runs against
+`digitalWrite()`/`millis()` on Arduino and a fake port on desktop — that injection, not an
+`#ifdef ARDUINO`, is how this library stays platform-agnostic while still shipping
+something that runs on a board. Elapsed time is unsigned `now - since` so a `millis()`
+wrap is handled (tested).
+
+**`examples/SolenoidDeviceDemo`** — the sample on real hardware, `LED_BUILTIN` as the coil,
+the global error sink printing to Serial, every state transition printed via
+`deviceStateToString()`. One cycle: command-before-`begin()` rejection (setup only),
+legal 1 s pulse, then a deliberately-forgotten `release()` so the 2 s cutoff fires,
+`clearFault()`, repeat.
+
 **`tests/test_device_sink.cpp`** — two deliberately non-motion test doubles defined in the
 test itself (`MockSolenoid`: has a real busy concept; `MockCurrentSensor`: pure sensor,
 honestly never `BUSY`). Covers sink dispatch field-by-field, one registration serving both
 device types, uninstall, and the full lifecycle observed through a bare `IDevice*`.
+
+**`tests/test_solenoid_device.cpp`** — `SolenoidDevice` against a fake `SolenoidPort` with a
+hand-advanced clock (51 checks): pre-`begin()` rejection, clean `begin()`, pulse within the
+limit, the cutoff (sticky, reported once, coil off, `energize()` refused silently while
+`ERRORED`), recovery, `millis()` wrap, and no-sink operation via `IDevice*`.
 
 ### Three-tier State / Status / Error — the core design decision
 

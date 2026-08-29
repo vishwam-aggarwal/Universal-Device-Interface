@@ -21,7 +21,9 @@ Plain C++11. Zero Arduino dependency. Builds identically on AVR, ARM, and deskto
 - [Where this fits](#where-this-fits)
 - [Features](#features)
 - [Installation](#installation)
-- [Quick start: a non-motion device](#quick-start-a-non-motion-device)
+- [Quick start](#quick-start)
+- [Sample device: `SolenoidDevice`](#sample-device-solenoiddevice)
+- [Writing your own device](#writing-your-own-device)
 - [Architecture](#architecture)
   - [`IDevice`](#idevice)
   - [State / Status / Error — three tiers](#state--status--error--three-tiers)
@@ -69,8 +71,13 @@ This library depends on nothing. Everything else depends on it.
   directly).
 - `GlobalErrorSink` + `IDevice::setGlobalErrorSink()` — **one** registration for every
   device type in the whole family, not one per class.
+- `SolenoidDevice` — a shipped, tested sample implementation (non-motion on purpose) with
+  its hardware pin and clock injected, so the identical class runs on Arduino and desktop.
+- `examples/SolenoidDeviceDemo` — runs the sample on real hardware with the error sink
+  printing to Serial (verified on an Arduino UNO R4 WiFi).
 - Header-only apart from `IDevice.cpp`, which holds two static definitions.
-- Desktop CMake/CTest harness with two non-motion test doubles.
+- Desktop CMake/CTest harness: `IDevice` sink/state tests against two test doubles, plus
+  the sample device against a fake port.
 
 ---
 
@@ -100,94 +107,100 @@ target_include_directories(device PUBLIC extern/Universal-Device-Interface/src)
 
 ---
 
-## Quick start: a non-motion device
+## Quick start
 
-A solenoid actuator — no position, no velocity, nothing to do with the motion stack.
+Use the shipped sample device. One sink registration, one `IDevice*`, and the LED on your
+board stands in for a solenoid coil (this is `examples/SolenoidDeviceDemo`, condensed):
 
 ```cpp
 #include <IDevice.h>
+#include <SolenoidDevice.h>
 
-// 1. The interface: what every solenoid backend must provide.
-class ISolenoidActuator : public IDevice {
-public:
-    virtual bool energize() = 0;
-    virtual void release()  = 0;
-};
-
-// 2. A backend. Status and Error are local enums, 0 = none, by convention.
-class SimulatedSolenoid : public ISolenoidActuator {
-public:
-    enum Status { STATUS_NONE = 0, STATUS_ENERGIZED = 1 };
-    enum Error  { ERR_NONE = 0, ERR_OVERCURRENT = 1, ERR_NOT_ONLINE = 2 };
-
-    bool begin() override { online_ = true; return true; }
-
-    bool energize() override {
-        if (!online_) { reportError("Solenoid", ERR_NOT_ONLINE); return false; }
-        if (error_ != ERR_NONE) return false;
-        energized_ = true;
-        return true;
-    }
-    void release() override { energized_ = false; }
-    bool clearFault()       { error_ = ERR_NONE; return true; }
-
-    bool isOnline() const override { return online_; }
-
-    // Precedence: OFFLINE > ERRORED > BUSY > IDLE.
-    DeviceState getState() const override {
-        if (!online_)           return DeviceState::OFFLINE;
-        if (error_ != ERR_NONE) return DeviceState::ERRORED;
-        if (energized_)         return DeviceState::BUSY;
-        return DeviceState::IDLE;
-    }
-    uint32_t getStatus() const override { return energized_ ? STATUS_ENERGIZED : STATUS_NONE; }
-    uint32_t getError()  const override { return error_; }
-
-    const char* getStatusString(uint32_t s) const override {
-        return s == STATUS_ENERGIZED ? "Energized" : s == STATUS_NONE ? "None" : "Unknown status";
-    }
-    const char* getErrorString(uint32_t e) const override {
-        switch (e) {
-            case ERR_NONE:        return "No error";
-            case ERR_OVERCURRENT: return "Coil overcurrent";
-            case ERR_NOT_ONLINE:  return "Command rejected: not online";
-            default:              return "Unknown error";
-        }
-    }
-    const char* getDeviceName() const override { return "SimulatedSolenoid"; }
-
-private:
-    bool     online_ = false, energized_ = false;
-    uint32_t error_  = ERR_NONE;
-};
-
-// 3. The application: one sink, any mix of devices.
-void printError(const char* layer, const char* source, uint32_t code,
-                const char* str, void* /*ctx*/) {
-    Serial.print("["); Serial.print(layer); Serial.print("/"); Serial.print(source);
-    Serial.print("] error "); Serial.print(code); Serial.print(": "); Serial.println(str);
+void serialErrorSink(const char* layer, const char* source, uint32_t code,
+                     const char* str, void* /*ctx*/) {
+    Serial.print("[ERROR] "); Serial.print(layer); Serial.print("/"); Serial.print(source);
+    Serial.print(" code ");   Serial.print(code);  Serial.print(": "); Serial.println(str);
 }
 
-SimulatedSolenoid latch;
-// ... an IMotorDriver, an IEncoder, a MotionDevice -- all IDevice too.
-IDevice* devices[] = { &latch /*, &motor, &encoder, &arm */ };
+// The only Arduino-specific glue: how to drive the coil, how to read the clock.
+static const int COIL_PIN = LED_BUILTIN;
+static void     coilWrite(bool on, void* ctx) { digitalWrite(*(const int*)ctx, on ? HIGH : LOW); }
+static uint32_t clockNowMs(void*)            { return millis(); }
+static const SolenoidPort port = { coilWrite, clockNowMs, (void*)&COIL_PIN };
+
+SolenoidDevice latch("DemoLatch", port, /*maxOnTimeMs=*/2000);
+IDevice* dev = &latch;                       // generic code only needs this
 
 void setup() {
     Serial.begin(115200);
-    IDevice::setGlobalErrorSink(printError);   // ONCE, for every device type
-    for (IDevice* d : devices) d->begin();
+    pinMode(COIL_PIN, OUTPUT);
+    IDevice::setGlobalErrorSink(serialErrorSink);   // ONCE, for every device type
+    dev->begin();
 }
 
 void loop() {
-    for (IDevice* d : devices) {
-        d->update();
-        if (d->getState() == DeviceState::ERRORED) {
-            Serial.print(d->getDeviceName()); Serial.print(" is ");
-            Serial.println(deviceStateToString(d->getState()));
-        }
+    latch.energize();                        // BUSY / STATUS_ENERGIZED
+    // ... forget to release() ...
+    dev->update();                           // at 2 s: coil cut, ERR_ON_TIME_EXCEEDED
+                                             // reaches serialErrorSink, state ERRORED
+    if (dev->getState() == DeviceState::ERRORED) {
+        Serial.println(deviceStateToString(dev->getState()));
+        latch.clearFault();                  // back to IDLE
     }
+    delay(10);
 }
 ```
+
+What that prints on an UNO R4 WiFi (built-in LED as the coil):
+
+```
+energize() -> DemoLatch state=BUSY status=Energized error=No error online=yes
+release() after 1 s -> DemoLatch state=IDLE status=None error=No error online=yes
+energize() and never release -> DemoLatch state=BUSY status=Energized error=No error online=yes
+[ERROR] Solenoid/DemoLatch code 2: Coil held past max on-time; force-released
+after the cutoff -> DemoLatch state=ERRORED status=None error=Coil held past max on-time; force-released online=yes
+clearFault() -> DemoLatch state=IDLE status=None error=No error online=yes
+```
+
+---
+
+## Sample device: `SolenoidDevice`
+
+`src/SolenoidDevice.h` is the reference implementation of an `IDevice` and is deliberately
+**not** a motor, encoder, or anything else from the motion stack: it's a coil you switch on
+and off, with a real-world safety rule (most solenoids are intermittent-duty — hold the coil
+past its rated on-time and it overheats).
+
+| | |
+|---|---|
+| Lifecycle | `begin()` drives the coil to a known-safe OFF state and goes `IDLE`. `update()` is the protective cutoff — call it every `loop()`. |
+| Commands | `energize()`, `release()`, `clearFault()`. |
+| State | `OFFLINE` before `begin()`; `BUSY` while energized; `ERRORED` after a cutoff; `IDLE` otherwise. |
+| Status | `STATUS_NONE`, `STATUS_ENERGIZED`. |
+| Errors | `ERR_NOT_ONLINE` — a command before `begin()`: **reported but not latched** (device stays `OFFLINE`). `ERR_ON_TIME_EXCEEDED` — coil held past `maxOnTimeMs`: **force-released and latched** until `clearFault()`. Both kinds of `reportError()` use, side by side. |
+| Platform independence | The class never touches a pin or a clock. Both come in through `SolenoidPort { writeCoil, nowMs, ctx }` — `digitalWrite()`/`millis()` on Arduino, a fake with a hand-advanced clock in `tests/test_solenoid_device.cpp`. Same class, unmodified, on both. |
+
+`examples/SolenoidDeviceDemo` exercises every row of that table on hardware, with the sink
+printing to Serial. It needs no wiring — `LED_BUILTIN` is the coil. To drive a real
+solenoid/relay, point `COIL_PIN` at a transistor/MOSFET/relay input, never at a coil
+directly.
+
+---
+
+## Writing your own device
+
+`src/SolenoidDevice.h` is the template — copy its shape:
+
+1. Derive from `IDevice`. Declare local `enum Status { STATUS_NONE = 0, ... }` and
+   `enum Error { ERR_NONE = 0, ... }`.
+2. Implement `begin()` (bring hardware to a known-safe state, then go online),
+   `isOnline()`, `getState()` (apply the precedence rule `OFFLINE` > `ERRORED` > `BUSY` >
+   `IDLE`), `getStatus()`/`getError()`, both `*String()` mappers, and `getDeviceName()`.
+3. Override `update()` only if the device needs periodic servicing.
+4. Call `reportError("<Layer>", code)` wherever something goes wrong. Decide separately
+   whether that fault latches — `reportError()` itself never changes state.
+5. Keep hardware I/O out of the interface header: inject it (as `SolenoidDevice` does with
+   `SolenoidPort`) or put it in a separate Arduino-only backend `.cpp`.
 
 ---
 
@@ -354,11 +367,20 @@ ctest --test-dir build --output-on-failure
 On Windows with MSVC add `--config Debug` to the build step and `-C Debug` to `ctest` (or
 run `.vscode/build-debug.bat`, which configures with NMake from a VS developer shell).
 
-`tests/test_device_sink.cpp` defines two non-motion test doubles (`MockSolenoid`,
-`MockCurrentSensor`) and covers: `reportError()` dispatch (layer / name / code / string /
-userContext all arrive intact), one sink registration serving both device types, uninstall
-via `setGlobalErrorSink(nullptr)`, and the full `OFFLINE → IDLE → BUSY → ERRORED → IDLE`
-lifecycle observed through a bare `IDevice*`.
+- `tests/test_device_sink.cpp` defines two non-motion test doubles (`MockSolenoid`,
+  `MockCurrentSensor`) and covers: `reportError()` dispatch (layer / name / code / string /
+  userContext all arrive intact), one sink registration serving both device types, uninstall
+  via `setGlobalErrorSink(nullptr)`, and the full `OFFLINE → IDLE → BUSY → ERRORED → IDLE`
+  lifecycle observed through a bare `IDevice*`.
+- `tests/test_solenoid_device.cpp` runs the shipped `SolenoidDevice` against a fake
+  `SolenoidPort` with a hand-advanced clock: rejected-before-`begin()` (reported, not
+  latched), the protective cutoff (latched, reported once, coil forced off), recovery,
+  `millis()` wrap-around, and operation with no sink installed.
+
+**On hardware**: `arduino-cli compile --fqbn arduino:renesas_uno:unor4wifi -u -p <port>
+examples/SolenoidDeviceDemo`, then open a 115200-baud monitor. The UNO R4 WiFi's native USB
+doesn't reset when the monitor connects, so press RESET to see the `setup()` lines (the
+pre-`begin()` rejection); the `loop()` cycle repeats every ~6 s regardless.
 
 ---
 
