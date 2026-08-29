@@ -293,12 +293,19 @@ and will drift. Recorded here so the intent survives between sessions.
 
 ### Open follow-ups (optional, nothing is blocked on these)
 
-- **Universal-Motion-Interface still pins Trajectory at `ab994d8` (pre-retrofit).** Bumping
-  it is the only cross-repo work left. When it happens: add `device` to the `trajectory`
-  target's link libraries in Motion's CMake (those sources now need UDI's include dir), and
-  expect `planJointMove()` to start returning `false` for limit sets it previously accepted
-  — that's the ignored-return-value bug fix surfacing, already mapped to
-  `MotionDevice::ERR_PLAN_FAILED`.
+- ~~Motion's Trajectory submodule pin~~ — **DONE 2026-08-29** (`main` @ `fa4e79e`). Trajectory
+  `ab994d8 -> 9cad114`, UDI `6b0aa47 -> 53405b2`. `planJointMove()` now correctly fails on
+  unusable joint limits, and a planning failure produces two sink reports by design (the
+  planner's specific cause, then MotionDevice's aggregated `ERR_PLAN_FAILED`). 62/62 checks.
+  **The whole family is now on matching pins — no cross-repo work outstanding.**
+- **AVR RAM is the binding constraint for `IDevice` implementations** — found during that
+  bump, and it generalizes. `getErrorString()`/`getStatusString()` string tables live in
+  `.data` (RAM) on AVR, and because those methods are **virtual** they are reachable from
+  the vtable, so `--gc-sections` can never drop them even in a sketch that never calls them.
+  `TrajectoryGroup`'s tables alone cost ~235 bytes and pushed `SimulatedArm3DOF` to 104% of
+  an Uno's RAM. Fixed in the sketch (wrap its own literals in `F()`), **not** the library:
+  returning `PROGMEM` data would break the `const char*` contract the sink relies on across
+  all six repos. Re-check RAM on AVR after linking any additional `IDevice` implementation.
 - **Encoder's "sustained `isValid() == false`" reporting** was deliberately not built (see
   its bullet). Only worth revisiting if a caller actually needs it.
 - The family-wide smoke test below was effectively achieved per-repo (Motion's suite proves
