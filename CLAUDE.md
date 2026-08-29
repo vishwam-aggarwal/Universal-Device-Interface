@@ -200,10 +200,17 @@ and will drift. Recorded here so the intent survives between sessions.
   instead of overwriting it with `ERR_NOT_SERVO_ON`); `UMIConfig.h` gates the SERVO/PCA9685
   defaults on `#ifdef ARDUINO` — without that, the new `#error` guard would fire on every
   desktop build, since the config file itself defined the flags.
-- **Universal-Tool-Interface**: `IEndEffector : public IDevice`. `getDeviceName()` forwards
-  to `getToolName()`; keep `update()` mandatory. `ServoGripperDriver` delegates
-  `getState()`/`getStatus()`/`getStatusString()` to the wrapped `IMotorDriver&`, as it
-  already does for `getError()`/`isOnline()`.
+- **Universal-Tool-Interface — DONE 2026-08-29** (local commit `7fda07a` on `main`; see that
+  repo's `CLAUDE.md` "IDevice retrofit" section for the full record). Exactly as planned.
+  Notes worth carrying forward: `IGripper` needed **zero** changes — it only ever added
+  gripper-specific methods on top. `ServoGripperDriver` deliberately gets no `Status`/`Error`
+  enum of its own (it adds no actuation hardware, so every failure is the motor's, already
+  reported there), which means the codes it returns are the wrapped motor's local enum
+  values and must be mapped through its own delegating `getStatusString()`/`getErrorString()`;
+  `getState()` is exempt, since `DeviceState` is shared family-wide. Both wizards previously
+  compared a *gripper's* `getState()` against a *motor's* `ST_ERRORED` enum — it only worked
+  because both were `uint8_t` with matching values, which is exactly the coincidence this
+  retrofit replaces with a real shared type.
 - **Universal-Motion-Interface**: `MotionDevice : public IDevice` — doesn't reopen the "no
   `IMotionDevice` abstraction" decision; one concrete class that now also conforms. Delete
   the hand-rolled sink statics + `setGlobalErrorSink()`; existing `enum State {ST_IDLE,
