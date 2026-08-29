@@ -161,7 +161,26 @@ listing Arduino-touching `.cpp` files. The README carries the copy-pasteable
 each `UxIConfig.h` during its retrofit so a mis-toggled flag fails fast instead of deep
 inside a missing `Servo.h`.
 
-## Later work: retrofitting the sibling repos (not this repo)
+## Retrofitting the sibling repos
+
+### Status board (last updated 2026-08-29)
+
+| Repo | State |
+|---|---|
+| **Universal-Device-Interface** | Built, green, pushed. `master` @ `dfefa8e`. |
+| **Universal-Motor-Interface** | ✅ Retrofitted, pushed. `main` @ `e68cbce`. |
+| **Universal-Tool-Interface** | ✅ Retrofitted, pushed. `main` @ `7fda07a`. |
+| **Universal-Motion-Interface** | ⬜ Next. Biggest one: the only repo with `extern/` submodule pins to bump (UMI/UTI are pushed, so the pins can now point at real commits), plus CMake wiring for `IDevice.cpp` + UDI's include dir. |
+| **Universal-Encoder-Interface** | ⬜ Pending. Fully independent of the others — can be done in any order. |
+| **Universal-Trajectory-Interface** | ⬜ Pending **and not settled** — needs the user's call before starting (see its bullet below). |
+
+**Resuming in a new session**: work from a session rooted in the target repo, reading its
+own live code. Each retrofitted repo's `CLAUDE.md` ends with an "IDevice retrofit" section
+recording exactly what changed there and how it was verified — read that repo's before
+touching it. The per-repo plans below still hold for the unfinished three; the ✅ bullets
+record what actually differed from the plan.
+
+### Plans and records
 
 Each sibling needs its own retrofit, done from a session rooted in *that* repo reading its
 own current code — the reference snapshots at the bottom of this file are from 2026-08-29
@@ -172,14 +191,14 @@ and will drift. Recorded here so the intent survives between sessions.
   `name=` exactly — the way Motion's already lists `Universal Motor Interface,
   UniversalTrajectoryInterface,Universal Tool Interface`).
 - `getState()` changes return type from `uint8_t` to `DeviceState`. **Break catalog** —
-  every one of these stops compiling and must be updated deliberately, not discovered:
-  `x.getState() == XxxMotorDriver::ST_ERRORED` in UMI's `RCServoCalibration` /
-  `PCA9685ServoCalibration`, UTI's `ServoGripperCalibration` / `PCA9685GripperCalibration`
-  (≈12 lines), Motion's `SimulatedArm3DOF.ino` (`MotionDevice::ST_ERRORED`) and
+  every one of these stops compiling and must be updated deliberately, not discovered.
+  ~~UMI's `RCServoCalibration` / `PCA9685ServoCalibration`~~ and ~~UTI's
+  `ServoGripperCalibration` / `PCA9685GripperCalibration`~~ are **done**; still outstanding:
+  Motion's `SimulatedArm3DOF.ino` (`MotionDevice::ST_ERRORED`) and
   `tests/test_motion_device.cpp` (3 asserts) → become `== DeviceState::ERRORED`
-  (backend-independent, an improvement). `Serial.print(x.getState())` in `SimulatedMotor`,
-  `PCA9685ServoTest`, `ODriveCANMotorDriverTest`, `ServoGripperTest` →
-  `deviceStateToString(...)`.
+  (backend-independent, an improvement). Likewise `Serial.print(x.getState())` →
+  `deviceStateToString(...)`: done in `SimulatedMotor`, `PCA9685ServoTest`,
+  `ODriveCANMotorDriverTest`, `ServoGripperTest`; check Motion's sketch when its turn comes.
 - Existing `IMotorDriver::setGlobalErrorSink(...)` / `MotionDevice::setGlobalErrorSink(...)`
   calls in sketches keep compiling (inherited static). The second call in
   `SimulatedArm3DOF.ino` just becomes redundant — collapse to one `IDevice::` call, but

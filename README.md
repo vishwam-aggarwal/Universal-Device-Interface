@@ -47,14 +47,18 @@ Plain C++11. Zero Arduino dependency. Builds identically on AVR, ARM, and deskto
 
 Every other library in the family sits on top of this one:
 
-- **Universal-Motor-Interface** — `IMotorDriver : IDevice`. Originally owned the global
+- **Universal-Motor-Interface** ✅ — `IMotorDriver : IDevice`. Originally owned the global
   error sink; that machinery now lives here.
-- **Universal-Tool-Interface** — `IEndEffector : IDevice` (and `IGripper : IEndEffector`).
-- **Universal-Encoder-Interface** — `IEncoder : IDevice`.
-- **Universal-Trajectory-Interface** — `TrajectoryGroup` / `CartesianMove` gain a local
-  `Error` enum and report through the shared sink. `ITrajectoryProfile` stays a pure math
-  primitive and does **not** derive from `IDevice`.
-- **Universal-Motion-Interface** — `MotionDevice : IDevice`, the orchestrator.
+- **Universal-Tool-Interface** ✅ — `IEndEffector : IDevice` (and `IGripper : IEndEffector`).
+- **Universal-Motion-Interface** — `MotionDevice : IDevice`, the orchestrator. *(planned)*
+- **Universal-Encoder-Interface** — `IEncoder : IDevice`. *(planned)*
+- **Universal-Trajectory-Interface** — `TrajectoryGroup` / `CartesianMove` would gain a local
+  `Error` enum and report through the shared sink; `ITrajectoryProfile` stays a pure math
+  primitive and does **not** derive from `IDevice`. *(planned, scope not yet settled)*
+
+✅ = already converted. The rest still use their own local state/error conventions until
+their turn; nothing in this library depends on them, so the conversions can land one at a
+time without breaking anything already converted.
 
 This library depends on nothing. Everything else depends on it.
 
