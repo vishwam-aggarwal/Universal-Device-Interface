@@ -172,13 +172,16 @@ inside a missing `Servo.h`.
 | **Universal-Tool-Interface** | ✅ Retrofitted, pushed. `main` @ `7fda07a`. |
 | **Universal-Motion-Interface** | ✅ Retrofitted, pushed. `main` @ `b1191d5`. 53/53 desktop checks; verified on real UNO R4 WiFi hardware. |
 | **Universal-Encoder-Interface** | ✅ Retrofitted, pushed. `main` @ `41e591c`. 4/4 ctest suites; verified on real UNO R4 WiFi hardware. |
-| **Universal-Trajectory-Interface** | ⬜ Pending **and not settled** — needs the user's call before starting (see its bullet below). |
+| **Universal-Trajectory-Interface** | ✅ Retrofitted, pushed. `master` @ `9cad114`, CI green. Both planners + both `plan()` bugs fixed. |
+
+**All six repos are now retrofitted.** What remains is optional follow-up, not required
+work — see "Open follow-ups" below.
 
 **Resuming in a new session**: work from a session rooted in the target repo, reading its
 own live code. Each retrofitted repo's `CLAUDE.md` ends with an "IDevice retrofit" section
 recording exactly what changed there and how it was verified — read that repo's before
-touching it. The per-repo plans below still hold for the unfinished three; the ✅ bullets
-record what actually differed from the plan.
+touching it. Every bullet below is now a ✅ record of what actually differed from the
+original plan, not a plan to execute.
 
 ### Plans and records
 
@@ -265,27 +268,42 @@ and will drift. Recorded here so the intent survives between sessions.
   `IEndEffector`), so `IDevice`'s default no-op preserves the repo's "no update()/cache
   step" decision; and `AS5600EncoderDriver::isOnline()` reports what `begin()` found rather
   than re-probing, so a `const` accessor never hides a blocking I2C transaction.
-- **Universal-Trajectory-Interface**: the one sub-decision **not fully settled** — confirm
-  before doing it. The plan targets `TrajectoryGroup` (not `ITrajectoryProfile`/
-  `TrapezoidalProfile`, which are stateless math primitives where `plan()`'s bool already
-  says everything). Two things the original plan missed:
-  1. **`CartesianMove` exists now** (`src/CartesianMove.h`, alongside `IPathGeometry`/
-     `LinePath`/`ArcPath`) and is the same shape as `TrajectoryGroup` — a planner whose
-     `plan()` returns bool. Whatever `TrajectoryGroup` gets, `CartesianMove` gets too, or
-     neither does.
-  2. **Real bug to fix in the same change**: `TrajectoryGroup::plan()` ignores every
-     per-axis `_profiles[i]->plan(...)` return value (`TrajectoryGroup.cpp`, both phases)
-     — it returns `true` even when an axis failed to plan. That's precisely the "why did
-     plan() fail" the new local `Error` enum is meant to surface.
-  Harness/CI wiring: this repo would gain its first dependency (its `CLAUDE.md` says "no
-  dependency on [UMI] and never will" — a UDI dependency is a different, plain-C++11
-  thing, but the sentence needs updating), an `extern/Universal-Device-Interface`
-  submodule, `IDevice.cpp` in the `trajectory` library sources, and `submodules: true` on
-  `actions/checkout` in `.github/workflows/build.yml`. The SOEM/Linux hard-real-time
-  constraint is unaffected: `IDevice` adds a vtable and nothing else.
+- **Universal-Trajectory-Interface — DONE 2026-08-29** (`master` @ `9cad114`, pushed, CI
+  green; that repo's `CLAUDE.md` has the full record but is **gitignored there**, so it is
+  local-only — the README carries the public-facing version). **The open scope question is
+  settled: both `TrajectoryGroup` and `CartesianMove` got `IDevice`, the per-axis math did
+  not.** They are the same shape (a composing planner whose `plan()` can fail in ways a
+  bool can't explain), so splitting them would have been arbitrary. `ITrajectoryProfile`/
+  `TrapezoidalProfile`/`IPathGeometry`/`LinePath`/`ArcPath` stay plain math — **don't
+  retrofit them later** without a concrete failure mode a bool can't carry.
+  - Both `plan()` bugs fixed: the ignored per-axis return values (a group could report
+    success with an axis that never planned — reachable via a zero/NaN `vMax`/`aMax`), and
+    `CartesianMove::plan()` dereferencing `path`/`profile` unchecked. Both now validate
+    before storing and leave no plan loaded on failure, so `evaluate()` is inert.
+  - Two rulings worth reusing: **neither planner ever reports `BUSY`** (stateless w.r.t.
+    time — the caller owns `t` and `evaluate()` is `const`, so "moving" isn't knowable
+    honestly); and **`isOnline()` is unconditionally `true`** (pure computation has nothing
+    to be offline from, and tying it to `begin()` would leave every `TrajectoryGroup` held
+    as a plain member — `MotionDevice`'s — permanently `OFFLINE`).
+  - Real-time constraint intact: `evaluate()` unchanged and still non-virtual, so no new
+    dispatch/allocation on the cyclic path; `reportError()` only from `plan()`.
 - GitHub repo: https://github.com/vishwam-aggarwal/Universal-Device-Interface (public,
   created 2026-08-29, default branch `master`). This is the URL the siblings' `extern/`
   submodules and PlatformIO `lib_deps` point at.
+
+### Open follow-ups (optional, nothing is blocked on these)
+
+- **Universal-Motion-Interface still pins Trajectory at `ab994d8` (pre-retrofit).** Bumping
+  it is the only cross-repo work left. When it happens: add `device` to the `trajectory`
+  target's link libraries in Motion's CMake (those sources now need UDI's include dir), and
+  expect `planJointMove()` to start returning `false` for limit sets it previously accepted
+  — that's the ignored-return-value bug fix surfacing, already mapped to
+  `MotionDevice::ERR_PLAN_FAILED`.
+- **Encoder's "sustained `isValid() == false`" reporting** was deliberately not built (see
+  its bullet). Only worth revisiting if a caller actually needs it.
+- The family-wide smoke test below was effectively achieved per-repo (Motion's suite proves
+  motor + tool + MotionDevice share one sink; Trajectory's proves both planners do). A
+  single cross-repo sketch exercising all five layers at once was never built.
 
 ### Verification, once all retrofits are done
 

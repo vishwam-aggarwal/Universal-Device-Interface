@@ -54,13 +54,13 @@ Every other library in the family sits on top of this one:
   the sink once for the whole stack.
 - **Universal-Encoder-Interface** ✅ — `IEncoder : IDevice`. Never `BUSY`; `isValid()` stays
   outside the tiers as a live reading-trust signal.
-- **Universal-Trajectory-Interface** — `TrajectoryGroup` / `CartesianMove` would gain a local
-  `Error` enum and report through the shared sink; `ITrajectoryProfile` stays a pure math
-  primitive and does **not** derive from `IDevice`. *(planned, scope not yet settled)*
+- **Universal-Trajectory-Interface** ✅ — `TrajectoryGroup` and `CartesianMove` derive from
+  `IDevice` and report planning failures through the shared sink. `ITrajectoryProfile`,
+  `TrapezoidalProfile` and `IPathGeometry` stay pure math primitives and deliberately do
+  **not**.
 
-✅ = already converted. The rest still use their own local state/error conventions until
-their turn; nothing in this library depends on them, so the conversions can land one at a
-time without breaking anything already converted.
+All six are now converted: one `IDevice::setGlobalErrorSink()` call covers every layer of
+the stack. This library still depends on none of them.
 
 This library depends on nothing. Everything else depends on it.
 
