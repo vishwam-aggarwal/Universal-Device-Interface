@@ -171,7 +171,7 @@ inside a missing `Servo.h`.
 | **Universal-Motor-Interface** | ✅ Retrofitted, pushed. `main` @ `e68cbce`. |
 | **Universal-Tool-Interface** | ✅ Retrofitted, pushed. `main` @ `7fda07a`. |
 | **Universal-Motion-Interface** | ✅ Retrofitted, pushed. `main` @ `b1191d5`. 53/53 desktop checks; verified on real UNO R4 WiFi hardware. |
-| **Universal-Encoder-Interface** | ⬜ Next. Fully independent of the others — nothing blocks it. |
+| **Universal-Encoder-Interface** | ✅ Retrofitted, pushed. `main` @ `41e591c`. 4/4 ctest suites; verified on real UNO R4 WiFi hardware. |
 | **Universal-Trajectory-Interface** | ⬜ Pending **and not settled** — needs the user's call before starting (see its bullet below). |
 
 **Resuming in a new session**: work from a session rooted in the target repo, reading its
@@ -247,16 +247,24 @@ and will drift. Recorded here so the intent survives between sessions.
   `BUSY` here is honest — this class owns the trajectory, so `TrajectoryGroup::evaluate()`
   authoritatively reports whether the move has settled. `isOnline()` aggregates `begin()`
   success with every joint's and the tool's own `isOnline()`.
-- **Universal-Encoder-Interface**: `IEncoder : public IDevice`. Reverses that repo's "no
-  state machine" and "no dependency on any sibling and shouldn't gain one" paragraphs —
-  update both. Gap this closes: a `begin()` failure or sustained `isValid() == false` has
-  no path to the shared sink today. `getState()` is `OFFLINE`/`IDLE`/`ERRORED` only (no
-  busy concept). `getDeviceName()` per backend (none has an identity string today).
-  `isValid()` stays separate — it's about reading *trust*, not device mode.
-  `SimulatedRotaryEncoderDriver` already has a non-virtual `isOnline()` test hook; it
-  becomes the override. Desktop harness: add `extern/Universal-Device-Interface` submodule
-  (Motion's `CLAUDE.md` mandates submodules over sibling-relative paths for portability),
-  compile `IDevice.cpp`, and switch `add_library(encoder INTERFACE)` to link it.
+- **Universal-Encoder-Interface — DONE 2026-08-29** (`main` @ `41e591c`, pushed; see that
+  repo's `CLAUDE.md` "IDevice retrofit" section). Both reversed decisions were rewritten in
+  place rather than left contradicting the code. Two refinements to what was planned:
+  1. **Only the `begin()`-failure half of the gap was closed, deliberately.** The plan also
+     listed "sustained `isValid() == false`". That was left to the caller: `isValid()` runs
+     on every read (reporting would flood the sink), "sustained" isn't measurable in a
+     library that owns no clock and no `update()` step, and a transition-triggered report
+     would give a pure query side effects. `isValid()` therefore neither latches `ERRORED`
+     nor reports at all. Revisit only if a caller actually needs it — it belongs in a
+     wrapper.
+  2. **`getStatus()` earns its keep here** rather than being a constant 0: `AS5600EncoderDriver`
+     exposes `NO_MAGNET`/`MAGNET_TOO_WEAK`/`MAGNET_TOO_STRONG` from status bits it already
+     read for `isValid()`, so an untrusted reading is now diagnosable. The pot and simulated
+     backends honestly have only `STATUS_NONE`.
+  Also worth knowing: `update()` is **not** re-declared pure here (unlike `IMotorDriver`/
+  `IEndEffector`), so `IDevice`'s default no-op preserves the repo's "no update()/cache
+  step" decision; and `AS5600EncoderDriver::isOnline()` reports what `begin()` found rather
+  than re-probing, so a `const` accessor never hides a blocking I2C transaction.
 - **Universal-Trajectory-Interface**: the one sub-decision **not fully settled** — confirm
   before doing it. The plan targets `TrajectoryGroup` (not `ITrajectoryProfile`/
   `TrapezoidalProfile`, which are stateless math primitives where `plan()`'s bool already

@@ -52,7 +52,8 @@ Every other library in the family sits on top of this one:
 - **Universal-Tool-Interface** ✅ — `IEndEffector : IDevice` (and `IGripper : IEndEffector`).
 - **Universal-Motion-Interface** ✅ — `MotionDevice : IDevice`, the orchestrator. Installs
   the sink once for the whole stack.
-- **Universal-Encoder-Interface** — `IEncoder : IDevice`. *(planned)*
+- **Universal-Encoder-Interface** ✅ — `IEncoder : IDevice`. Never `BUSY`; `isValid()` stays
+  outside the tiers as a live reading-trust signal.
 - **Universal-Trajectory-Interface** — `TrajectoryGroup` / `CartesianMove` would gain a local
   `Error` enum and report through the shared sink; `ITrajectoryProfile` stays a pure math
   primitive and does **not** derive from `IDevice`. *(planned, scope not yet settled)*
