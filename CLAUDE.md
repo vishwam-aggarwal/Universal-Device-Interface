@@ -191,16 +191,15 @@ and will drift. Recorded here so the intent survives between sessions.
   prose version) to show Universal-Device-Interface as the foundation under everything.
 
 **Per repo:**
-- **Universal-Motor-Interface**: `IMotorDriver : public IDevice`. Delete the duplicated
-  sink machinery, `IMotorDriver.cpp`, and the local `GlobalErrorSink.h`; `#include
-  <IDevice.h>`. `getDeviceName()` forwards to `getDriverName()` (nothing renamed). Keep
-  `void update() override = 0;` so it stays mandatory for motors. Per backend (RCServo,
-  PCA9685, ODriveCAN, Simulated): rename `enum State` → `enum Status` with `STATUS_`
-  enumerators, add a real `getState()` computing `DeviceState` from existing flags (servo-on
-  holding = `IDLE`/`STATUS_SERVO_ON`; ODrive mid-move with feedback = `BUSY`/`STATUS_MOVING`),
-  add `getStatus()`/`getStatusString()`. Note `SimulatedMotorDriver` reports `online_ = true`
-  before `begin()` today — fix so `OFFLINE` ⇔ `!isOnline()` holds. Add the `UMIConfig.h`
-  platform guard.
+- **Universal-Motor-Interface — DONE 2026-08-29** (local commit on `main`, see that repo's
+  `CLAUDE.md` "IDevice retrofit" section for the verification record). Exactly as planned,
+  plus: ODrive passes its raw `AxisState` through as `Status` and reports `BUSY` during the
+  drive's own calibration/homing sequences (real heartbeat data), not for "moving in closed
+  loop" (not cached by the backend — would be a guess); `checkServoOn()`'s unreachable
+  `ST_ERRORED` branch became real (a command while faulted re-reports the latched error
+  instead of overwriting it with `ERR_NOT_SERVO_ON`); `UMIConfig.h` gates the SERVO/PCA9685
+  defaults on `#ifdef ARDUINO` — without that, the new `#error` guard would fire on every
+  desktop build, since the config file itself defined the flags.
 - **Universal-Tool-Interface**: `IEndEffector : public IDevice`. `getDeviceName()` forwards
   to `getToolName()`; keep `update()` mandatory. `ServoGripperDriver` delegates
   `getState()`/`getStatus()`/`getStatusString()` to the wrapped `IMotorDriver&`, as it
