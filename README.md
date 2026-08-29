@@ -50,7 +50,8 @@ Every other library in the family sits on top of this one:
 - **Universal-Motor-Interface** ✅ — `IMotorDriver : IDevice`. Originally owned the global
   error sink; that machinery now lives here.
 - **Universal-Tool-Interface** ✅ — `IEndEffector : IDevice` (and `IGripper : IEndEffector`).
-- **Universal-Motion-Interface** — `MotionDevice : IDevice`, the orchestrator. *(planned)*
+- **Universal-Motion-Interface** ✅ — `MotionDevice : IDevice`, the orchestrator. Installs
+  the sink once for the whole stack.
 - **Universal-Encoder-Interface** — `IEncoder : IDevice`. *(planned)*
 - **Universal-Trajectory-Interface** — `TrajectoryGroup` / `CartesianMove` would gain a local
   `Error` enum and report through the shared sink; `ITrajectoryProfile` stays a pure math

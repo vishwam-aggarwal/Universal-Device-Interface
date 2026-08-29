@@ -170,8 +170,8 @@ inside a missing `Servo.h`.
 | **Universal-Device-Interface** | Built, green, pushed. `master` @ `dfefa8e`. |
 | **Universal-Motor-Interface** | ✅ Retrofitted, pushed. `main` @ `e68cbce`. |
 | **Universal-Tool-Interface** | ✅ Retrofitted, pushed. `main` @ `7fda07a`. |
-| **Universal-Motion-Interface** | ⬜ Next. Biggest one: the only repo with `extern/` submodule pins to bump (UMI/UTI are pushed, so the pins can now point at real commits), plus CMake wiring for `IDevice.cpp` + UDI's include dir. |
-| **Universal-Encoder-Interface** | ⬜ Pending. Fully independent of the others — can be done in any order. |
+| **Universal-Motion-Interface** | ✅ Retrofitted, pushed. `main` @ `b1191d5`. 53/53 desktop checks; verified on real UNO R4 WiFi hardware. |
+| **Universal-Encoder-Interface** | ⬜ Next. Fully independent of the others — nothing blocks it. |
 | **Universal-Trajectory-Interface** | ⬜ Pending **and not settled** — needs the user's call before starting (see its bullet below). |
 
 **Resuming in a new session**: work from a session rooted in the target repo, reading its
@@ -230,18 +230,23 @@ and will drift. Recorded here so the intent survives between sessions.
   compared a *gripper's* `getState()` against a *motor's* `ST_ERRORED` enum — it only worked
   because both were `uint8_t` with matching values, which is exactly the coincidence this
   retrofit replaces with a real shared type.
-- **Universal-Motion-Interface**: `MotionDevice : public IDevice` — doesn't reopen the "no
-  `IMotionDevice` abstraction" decision; one concrete class that now also conforms. Delete
-  the hand-rolled sink statics + `setGlobalErrorSink()`; existing `enum State {ST_IDLE,
-  ST_MOVING, ST_ERRORED}` → `Status` (`STATUS_NONE/STATUS_MOVING`), `getState()` maps off
-  the same tracking (`ST_MOVING` → `BUSY`). `getDeviceName()` from a constructor-supplied
-  label (multi-arm setups). Leave `tick(float t)` alone; don't override `update()`. Add
-  `extern/Universal-Device-Interface` as a pinned submodule, add UDI's `src/` to the
-  `umi_core` and `tool_interface` include dirs (their headers now include `IDevice.h`), and
-  run the version-pinning bump ritual in that repo's `CLAUDE.md`. Rewrite that
-  `CLAUDE.md`'s "Error sink — own independent registration" section: the rejected
-  alternative was reaching into UMI's internals; inheriting a shared base is the third
-  option that section never considered.
+- **Universal-Motion-Interface — DONE 2026-08-29** (`main` @ `b1191d5`, pushed; see that
+  repo's `CLAUDE.md` "IDevice retrofit" section). As planned, plus three things the plan
+  didn't anticipate:
+  1. **`getState()` must NOT derive `ERRORED` from `error_ != ERR_NONE`** the way the motor
+     backends do. `ERR_ALREADY_MOVING` deliberately doesn't fault the device (a rejected
+     re-plan must leave the running move alone — a tested guarantee), so deriving `ERRORED`
+     from the code would flip a healthy moving arm into `ERRORED` just because someone asked
+     for a second move. It keeps an explicit `faulted_` flag instead. **Watch for this shape
+     anywhere a class reports errors that aren't faults.**
+  2. **`umi_core` had to become a CMake INTERFACE library** — it compiled UMI's
+     `IMotorDriver.cpp`, which UMI's own retrofit deleted (it only ever held UMI's sink
+     statics). Any other consumer's CMake listing that file needs the same fix.
+  3. The private `reportError(uint32_t)` had to be **renamed** to `setError()`: a one-arg
+     member of that name hides `IDevice`'s two-arg `reportError` by ordinary C++ name hiding.
+  `BUSY` here is honest — this class owns the trajectory, so `TrajectoryGroup::evaluate()`
+  authoritatively reports whether the move has settled. `isOnline()` aggregates `begin()`
+  success with every joint's and the tool's own `isOnline()`.
 - **Universal-Encoder-Interface**: `IEncoder : public IDevice`. Reverses that repo's "no
   state machine" and "no dependency on any sibling and shouldn't gain one" paragraphs —
   update both. Gap this closes: a `begin()` failure or sustained `isValid() == false` has
