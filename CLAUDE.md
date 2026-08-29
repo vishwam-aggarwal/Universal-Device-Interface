@@ -212,8 +212,9 @@ and will drift. Recorded here so the intent survives between sessions.
   submodule, `IDevice.cpp` in the `trajectory` library sources, and `submodules: true` on
   `actions/checkout` in `.github/workflows/build.yml`. The SOEM/Linux hard-real-time
   constraint is unaffected: `IDevice` adds a vtable and nothing else.
-- **New GitHub repo creation** for this repo is outward-facing and hard to reverse —
-  confirm exact name/visibility before `gh repo create`. The local `git init` is done.
+- GitHub repo: https://github.com/vishwam-aggarwal/Universal-Device-Interface (public,
+  created 2026-08-29, default branch `master`). This is the URL the siblings' `extern/`
+  submodules and PlatformIO `lib_deps` point at.
 
 ### Verification, once all retrofits are done
 
