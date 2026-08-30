@@ -308,9 +308,12 @@ and will drift. Recorded here so the intent survives between sessions.
   all six repos. Re-check RAM on AVR after linking any additional `IDevice` implementation.
 - **Encoder's "sustained `isValid() == false`" reporting** was deliberately not built (see
   its bullet). Only worth revisiting if a caller actually needs it.
-- The family-wide smoke test below was effectively achieved per-repo (Motion's suite proves
-  motor + tool + MotionDevice share one sink; Trajectory's proves both planners do). A
-  single cross-repo sketch exercising all five layers at once was never built.
+- ~~A single cross-repo sketch exercising every layer at once~~ — **BUILT and passing**, see
+  `hil/` (2026-08-29). `hil/HIL_FullStack` runs all six libraries in one sketch against a
+  real servo + AS5600 rig: **55/55 on an Arduino Nano R4**, three consecutive runs, with the
+  encoder providing independent ground truth for every motion. It lives in `hil/` rather
+  than `examples/` precisely so this library's own examples stay dependency-free — see
+  `hil/README.md` for the rig, results, and the AVR/ARM comparison.
 
 ### Verification, once all retrofits are done
 
