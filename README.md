@@ -219,9 +219,11 @@ directly.
    `SolenoidPort`) or put it in a separate Arduino-only backend `.cpp`.
 6. Optional: override `describe()` to list the devices you own (`d.child("name", member)`)
    and the values you expose, one line each, e.g.
-   `d.attr(attrSetup("cnfVMax", vMax_, "rad/s").range(0.0f, 10.0f).def(2.0f))`. Helpers:
-   `attrMount`, `attrSetup`, `attrW`, `attrR`, `attrIn`, `attrOut`; chain `.range()`,
-   `.def()`, `.enumOf()`, `.onWrite()`. Names carry their class as a prefix (`cnf`, `w`,
+   `d.attr(attrSetup(UDI_TEXT("cnfVMax"), vMax_, UDI_TEXT("rad/s")).range(0.0f, 10.0f).def(2.0f))`.
+   Helpers: `attrMount`, `attrSetup`, `attrW`, `attrR`, `attrIn`, `attrOut`; chain `.range()`,
+   `.def()`, `.enumOf(UDI_TEXT("None|Energize|..."))`, `.onWrite()`. Every name, unit and
+   enumeration is written `UDI_TEXT("...")`, which keeps it in flash on AVR instead of RAM;
+   an enumeration's values are the positions of its names. Names carry their class as a prefix (`cnf`, `w`,
    `r`, `io`) and never contain `/` or `.`. Take commands through one `wCommand`
    (`DeviceCommand.h`), as `SolenoidDevice` does.
    Override `end()` if the device must leave hardware safe on teardown.
