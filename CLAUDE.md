@@ -68,6 +68,9 @@ a dependency here, ever.
   `update()` defaults to a no-op (same "optional default" idiom as
   `IEndEffector::setPosition()`); a derived interface can make it mandatory again with
   `void update() override = 0;`.
+- Also non-pure, added 2026-09-30 for Universal-Device-Framework: `end()` (teardown, the
+  mirror of `begin()`, default no-op) and `describe(IDescriber&)` (default lists nothing).
+  Both defaulted so no existing device changes.
 - `static setGlobalErrorSink(sink, userContext = nullptr)` + protected
   `reportError(layer, err) const` + two protected statics. `reportError()` is a pure
   notification — it never mutates the device's state/error. Statics are defined in
@@ -78,6 +81,20 @@ a dependency here, ever.
 (the original used `uint32_t` without including it and only compiled because
 `IMotorDriver.h` had already pulled it in). Same typedef, so no printer function anywhere
 changes.
+
+**`src/Attr.h`** — `Attr {name, cls, type, dir, value, unit, onWrite}`: one exposed value
+that POINTS AT the device's own member (no copy, no registry). Classes `cnf`/`w`/`r`/`io`,
+`io` with a direction `IN`/`OUT` seen from the device. `AttrType` is deduced from the
+variable by the `attrCnf/attrW/attrR/attrIn/attrOut` helpers, so type and pointer can't
+disagree; an unsupported type (enum, `long`, `char`) doesn't compile on purpose.
+`AttrWriteHook {fn, ctx}` runs after a write is stored. Applying writes is the framework's
+job, not this library's.
+
+**`src/IDescriber.h`** — the visitor `describe()` calls: `child(name, device)` and
+`attr(attr)`. Protected non-virtual destructor (never deleted through the interface; keeps
+the deleting destructor out of AVR builds), so concrete describers should be `final`.
+Rules in the header: list owned/referenced children, unique names without `/` or `.`,
+same order every call, no side effects.
 
 **`src/SolenoidDevice.h`** — the shipped sample `IDevice` implementation, deliberately
 non-motion (a coil with an intermittent-duty on-time limit). It is the template for any
@@ -97,6 +114,10 @@ the global error sink printing to Serial, every state transition printed via
 legal 1 s pulse, then a deliberately-forgotten `release()` so the 2 s cutoff fires,
 `clearFault()`, repeat.
 
+`SolenoidDevice::describe()` lists `cnfMaxOnTimeMs`, `wEnergize` (write hook runs
+`energize()`/`release()`) and `rEnergized`. A `w` attribute holds the last request; the `r`
+attribute is the truth (a cutoff releases the coil without touching `wEnergize`).
+
 **`tests/test_device_sink.cpp`** — two deliberately non-motion test doubles defined in the
 test itself (`MockSolenoid`: has a real busy concept; `MockCurrentSensor`: pure sensor,
 honestly never `BUSY`). Covers sink dispatch field-by-field, one registration serving both
@@ -106,6 +127,10 @@ device types, uninstall, and the full lifecycle observed through a bare `IDevice
 hand-advanced clock (51 checks): pre-`begin()` rejection, clean `begin()`, pulse within the
 limit, the cutoff (sticky, reported once, coil off, `energize()` refused silently while
 `ERRORED`), recovery, `millis()` wrap, and no-sink operation via `IDevice*`.
+
+**`tests/test_describe.cpp`** — `describe()`, `Attr` and `end()` through a recording
+describer: defaults, the solenoid's attributes and hook, a parent with two children and
+`io` in both directions, type deduction.
 
 ### Three-tier State / Status / Error — the core design decision
 

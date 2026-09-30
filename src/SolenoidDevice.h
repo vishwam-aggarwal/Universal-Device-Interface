@@ -144,6 +144,20 @@ public:
     const char* getDeviceName() const override { return name_; }
 
     // ------------------------------------------------------------
+    // Device tree
+    // ------------------------------------------------------------
+    // wEnergize shows the write hook: writing it RUNS energize() or
+    // release(). It keeps the last command written, which is not always
+    // what happened (a faulted coil refuses to energize, the cutoff
+    // releases it). THE TRUTH IS rEnergized: a w attribute is a request,
+    // an r attribute is the state.
+    void describe(IDescriber& d) override {
+        d.attr(attrCnf("cnfMaxOnTimeMs", maxOnTimeMs_, "ms"));
+        d.attr(attrW("wEnergize", wEnergize_, "", AttrWriteHook{onEnergizeWritten, this}));
+        d.attr(attrR("rEnergized", energized_));
+    }
+
+    // ------------------------------------------------------------
     // Extras
     // ------------------------------------------------------------
     bool     isEnergized()    const { return energized_; }
@@ -159,6 +173,11 @@ private:
     // yields the right elapsed value.
     static uint32_t elapsedMs(uint32_t now, uint32_t since) { return now - since; }
 
+    static void onEnergizeWritten(const Attr&, void* ctx) {
+        SolenoidDevice* self = static_cast<SolenoidDevice*>(ctx);
+        if (self->wEnergize_) self->energize(); else self->release();
+    }
+
     const char*  name_;
     SolenoidPort port_;
     uint32_t     maxOnTimeMs_;
@@ -167,4 +186,5 @@ private:
     bool     energized_     = false;
     uint32_t energizedAtMs_ = 0;
     uint32_t error_         = ERR_NONE;
+    bool     wEnergize_     = false;   // backing store for the wEnergize attribute
 };
