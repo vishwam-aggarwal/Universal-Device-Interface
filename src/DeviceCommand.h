@@ -34,13 +34,8 @@ enum CommandResult : uint8_t {
     RESULT_FAILED   = 4,  // accepted but did not complete; see getError()
 };
 
-// The enumeration for every device's rCommandResult attribute.
-// Function-local so a header-only device can use it without a .cpp;
-// a constant array like this needs no run-time initialisation.
-inline const AttrEnumEntry (&commandResultNames())[5] {
-    static const AttrEnumEntry names[5] = {
-        {RESULT_NONE, "None"}, {RESULT_RUNNING, "Running"}, {RESULT_DONE, "Done"},
-        {RESULT_REJECTED, "Rejected"}, {RESULT_FAILED, "Failed"},
-    };
-    return names;
+// The enumeration for every device's rCommandResult attribute, in the
+// order of CommandResult (enumeration values are positions).
+inline const AttrText* commandResultNames() {
+    return UDI_TEXT("None|Running|Done|Rejected|Failed");
 }

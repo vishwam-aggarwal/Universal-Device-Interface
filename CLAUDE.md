@@ -88,11 +88,18 @@ so they cost no RAM between calls. Classes `MOUNT` (cnf, set once before `begin(
 `SETUP` (cnf, runtime but not while BUSY), `W`, `R`, `IO` (with `IN`/`OUT` seen from the
 device). `minimum`/`maximum`/`defaultValue` are an `AttrNumber` union in the attribute's
 own kind of number (flags say which are set; absent = `NO_MIN`/`NO_MAX`/no default; a
-mount attribute with no default must be configured). `enumEntries`/`enumCount` point at a
-static `AttrEnumEntry {value, name}` table (nullptr = NO_ENUM). `AttrType` is deduced by the
+mount attribute with no default must be configured). `enumNames` is one `'|'`-separated
+text (nullptr = NO_ENUM) and the values are the names' positions, 0..`enumCount`-1.
+**All text -- `name`, `unit`, `enumNames` -- is `const AttrText*`, written `UDI_TEXT("...")`
+and read only through `attrTextEquals()`/`attrTextField()`/`attrTextCopy()`**: on AVR it is a
+`PSTR` in flash (via avr-libc's `<avr/pgmspace.h>`, not Arduino), elsewhere a plain literal.
+Why: as plain literals, one motor's attribute and command names cost ~320 B of an Uno's 2 KB
+RAM (measured 2026-09-30; `describe()` is virtual, so they can never be dropped), which put
+UMI's SimulatedMotor example at 2032/2048 B. `AttrText` is an incomplete type on purpose, so a
+flash pointer can't be printed or `strcmp`'d by accident. `AttrType` is deduced by the
 `attrMount/attrSetup/attrW/attrR/attrIn/attrOut` helpers, so type and pointer can't
 disagree; an unsupported type (C++ enum, `long`, `char`) doesn't compile on purpose.
-Chained `.range(lo, hi)` (either may be `NO_MIN`/`NO_MAX`), `.def(v)`, `.enumOf(table)`,
+Chained `.range(lo, hi)` (either may be `NO_MIN`/`NO_MAX`), `.def(v)`, `.enumOf(UDI_TEXT("A|B"))`,
 `.onWrite(fn, ctx)`. Fields are `minimum`/`maximum`, never `min`/`max`: Arduino.h defines
 those as macros. CHECKING AND APPLYING WRITES IS THE FRAMEWORK'S JOB, NOT THIS LIBRARY'S:
 UDF refuses out-of-range and non-enum values (never clamps).

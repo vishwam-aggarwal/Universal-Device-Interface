@@ -2,6 +2,9 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#if defined(__AVR__)
+#include <avr/pgmspace.h>   // avr-libc, not Arduino: flash strings
+#endif
 
 // ==================================================================
 // Attr -- one named value a device exposes to the outside world.
@@ -32,7 +35,68 @@
 // shape every device describes itself with.
 //
 // Plain C++11, no Arduino dependency, no heap.
+//
+// TEXT LIVES IN FLASH ON AVR. Names, units and enumerations are written
+// UDI_TEXT("...") and have the opaque type AttrText. On AVR, where a
+// plain string literal is copied into the 2 KB of RAM at startup, they
+// stay in flash; everywhere else UDI_TEXT is an ordinary literal. Read
+// them only through the attrText...() helpers below, never as a char*.
 // ==================================================================
+
+// A string that may be in flash. Deliberately incomplete: it cannot be
+// printed or compared by accident, only through the helpers.
+struct AttrText;
+
+#if defined(__AVR__)
+#define UDI_TEXT(s) (reinterpret_cast<const AttrText*>(PSTR(s)))
+#else
+#define UDI_TEXT(s) (reinterpret_cast<const AttrText*>(s))
+#endif
+
+inline char attrTextChar(const AttrText* t, size_t i) {
+    const char* p = reinterpret_cast<const char*>(t);
+#if defined(__AVR__)
+    return static_cast<char>(pgm_read_byte(p + i));
+#else
+    return p[i];
+#endif
+}
+
+// True when t is exactly the n characters at s (s need not end there).
+inline bool attrTextEquals(const AttrText* t, const char* s, size_t n) {
+    if (t == nullptr) return n == 0;
+    for (size_t i = 0; i < n; ++i) {
+        if (attrTextChar(t, i) != s[i]) return false;
+    }
+    return attrTextChar(t, n) == '\0';
+}
+
+// Field `index` of a '|'-separated list ("None|Energize|Release") into
+// dst, always null-terminated. Returns false if there is no such field or
+// dst was too small (the text is then cut short).
+inline bool attrTextField(const AttrText* list, uint8_t index, char* dst, size_t size) {
+    if (size == 0) return false;
+    dst[0] = '\0';
+    if (list == nullptr) return false;
+    size_t i = 0;
+    for (uint8_t f = 0; f < index; ++i) {
+        char c = attrTextChar(list, i);
+        if (c == '\0') return false;
+        if (c == '|') ++f;
+    }
+    size_t n = 0;
+    for (char c = attrTextChar(list, i); c != '\0' && c != '|'; c = attrTextChar(list, ++i)) {
+        if (n + 1 >= size) { dst[n] = '\0'; return false; }
+        dst[n++] = c;
+    }
+    dst[n] = '\0';
+    return true;
+}
+
+// The whole text into dst (a name or unit is one field).
+inline bool attrTextCopy(const AttrText* t, char* dst, size_t size) {
+    return attrTextField(t, 0, dst, size);
+}
 
 enum class AttrClass : uint8_t { MOUNT = 0, SETUP = 1, W = 2, R = 3, IO = 4 };
 
@@ -57,13 +121,6 @@ union AttrNumber {
     double   d;
 };
 
-// One named choice of an enumerated attribute. Tables are static const
-// arrays next to the device; an Attr only points at them.
-struct AttrEnumEntry {
-    int32_t     value;
-    const char* name;
-};
-
 // NO_MIN and NO_MAX are passed to range() for an open end.
 struct AttrNoLimit {};
 static const AttrNoLimit NO_MIN = AttrNoLimit();
@@ -85,23 +142,23 @@ struct Attr {
     // or no default.
     enum Flags : uint8_t { HAS_MIN = 1, HAS_MAX = 2, HAS_DEFAULT = 4 };
 
-    const char*          name;       // "rEnergized"; no '/' or '.' (they build paths)
+    const AttrText*      name;       // "rEnergized"; no '/' or '.' (they build paths)
     AttrClass            cls;
     AttrType             type;
     AttrDir              dir;
     uint8_t              flags;
     void*                value;      // the device's own variable, of type `type`
-    const char*          unit;       // "ms", "rad", "" when unitless; never null
+    const AttrText*      unit;       // "ms", "rad"; nullptr when unitless
     AttrNumber           minimum;
     AttrNumber           maximum;
     AttrNumber           defaultValue;  // used when nothing configured the value
-    const AttrEnumEntry* enumEntries;   // nullptr: NO_ENUM
-    uint8_t              enumCount;
+    const AttrText*      enumNames;     // "None|Energize|..."; nullptr: NO_ENUM
+    uint8_t              enumCount;     // fields in enumNames
     AttrWriteHook        writeHook;     // {nullptr, nullptr} when the device needs none
 
     // --------------------------------------------------------------
     // Chained setters, so one describe() line declares one attribute:
-    //   d.attr(attrSetup("cnfVMax", vMax_, "rad/s").range(0.0f, 10.0f).def(2.0f));
+    //   d.attr(attrSetup(UDI_TEXT("cnfVMax"), vMax_, UDI_TEXT("rad/s")).range(0.0f, 10.0f).def(2.0f));
     // (Named minimum/maximum, not min/max: Arduino.h defines min() and
     // max() as macros.)
     // Each converts its argument to the attribute's own type, so
@@ -121,13 +178,17 @@ struct Attr {
         return *this;
     }
 
-    // For integer attributes only (the framework refuses a write that is
-    // not one of the listed values).
-    template <size_t N>
-    Attr& enumOf(const AttrEnumEntry (&entries)[N]) {
-        static_assert(N > 0 && N <= 255, "an enumeration has 1 to 255 entries");
-        enumEntries = entries;
-        enumCount   = static_cast<uint8_t>(N);
+    // For integer attributes only. The names are one '|'-separated text
+    // and the values are their positions, 0 to count-1, which is how a
+    // wCommand or a state is numbered anyway and keeps the whole list one
+    // flash string. The framework refuses a write outside 0..count-1.
+    Attr& enumOf(const AttrText* names) {
+        enumNames = names;
+        uint16_t n = 1;
+        for (size_t i = 0; attrTextChar(names, i) != '\0'; ++i) {
+            if (attrTextChar(names, i) == '|') ++n;
+        }
+        enumCount = static_cast<uint8_t>(n > 255 ? 255 : n);
         return *this;
     }
 
@@ -140,14 +201,14 @@ struct Attr {
     bool hasMin() const     { return (flags & HAS_MIN) != 0; }
     bool hasMax() const     { return (flags & HAS_MAX) != 0; }
     bool hasDefault() const { return (flags & HAS_DEFAULT) != 0; }
-    bool hasEnum() const    { return enumEntries != nullptr; }
+    bool hasEnum() const    { return enumNames != nullptr; }
+    bool inEnum(int32_t v) const { return hasEnum() && v >= 0 && v < enumCount; }
 
-    // The name of an enumeration value, or nullptr when it has none.
-    const char* enumName(int32_t v) const {
-        for (uint8_t i = 0; i < enumCount; ++i) {
-            if (enumEntries[i].value == v) return enumEntries[i].name;
-        }
-        return nullptr;
+    // The name of enumeration value v into dst. False when v is not one
+    // of the values or dst was too small.
+    bool enumName(int32_t v, char* dst, size_t size) const {
+        if (!inEnum(v)) { if (size > 0) dst[0] = '\0'; return false; }
+        return attrTextField(enumNames, static_cast<uint8_t>(v), dst, size);
     }
 
 private:
@@ -188,7 +249,7 @@ inline AttrType attrTypeOf(float*)    { return AttrType::F32; }
 inline AttrType attrTypeOf(double*)   { return sizeof(double) == 8 ? AttrType::F64 : AttrType::F32; }
 
 template <typename T>
-inline Attr makeAttr(const char* name, AttrClass cls, AttrDir dir, T& value, const char* unit) {
+inline Attr makeAttr(const AttrText* name, AttrClass cls, AttrDir dir, T& value, const AttrText* unit) {
     Attr a = Attr();
     a.name  = name;
     a.cls   = cls;
@@ -201,27 +262,27 @@ inline Attr makeAttr(const char* name, AttrClass cls, AttrDir dir, T& value, con
 
 // One helper per class, so a describe() line reads as what it declares.
 template <typename T>
-inline Attr attrMount(const char* name, T& value, const char* unit = "") {
+inline Attr attrMount(const AttrText* name, T& value, const AttrText* unit = nullptr) {
     return makeAttr(name, AttrClass::MOUNT, AttrDir::NONE, value, unit);
 }
 template <typename T>
-inline Attr attrSetup(const char* name, T& value, const char* unit = "") {
+inline Attr attrSetup(const AttrText* name, T& value, const AttrText* unit = nullptr) {
     return makeAttr(name, AttrClass::SETUP, AttrDir::NONE, value, unit);
 }
 template <typename T>
-inline Attr attrW(const char* name, T& value, const char* unit = "") {
+inline Attr attrW(const AttrText* name, T& value, const AttrText* unit = nullptr) {
     return makeAttr(name, AttrClass::W, AttrDir::NONE, value, unit);
 }
 template <typename T>
-inline Attr attrR(const char* name, T& value, const char* unit = "") {
+inline Attr attrR(const AttrText* name, T& value, const AttrText* unit = nullptr) {
     return makeAttr(name, AttrClass::R, AttrDir::NONE, value, unit);
 }
 template <typename T>
-inline Attr attrIn(const char* name, T& value, const char* unit = "") {
+inline Attr attrIn(const AttrText* name, T& value, const AttrText* unit = nullptr) {
     return makeAttr(name, AttrClass::IO, AttrDir::IN, value, unit);
 }
 template <typename T>
-inline Attr attrOut(const char* name, T& value, const char* unit = "") {
+inline Attr attrOut(const AttrText* name, T& value, const AttrText* unit = nullptr) {
     return makeAttr(name, AttrClass::IO, AttrDir::OUT, value, unit);
 }
 

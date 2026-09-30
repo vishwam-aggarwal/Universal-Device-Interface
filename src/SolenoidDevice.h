@@ -163,11 +163,13 @@ public:
     // happened (the cutoff releases the coil on its own). THE TRUTH IS
     // rEnergized: a w attribute is a request, an r attribute is the state.
     void describe(IDescriber& d) override {
-        d.attr(attrMount("cnfMaxOnTimeMs", maxOnTimeMs_, "ms").range(1, NO_MAX));
-        d.attr(attrW("wCommand", command_).enumOf(commandNames()).def(CMD_NONE)
+        d.attr(attrMount(UDI_TEXT("cnfMaxOnTimeMs"), maxOnTimeMs_, UDI_TEXT("ms")).range(1, NO_MAX));
+        // Names in the order of enum Command: a value is its position.
+        d.attr(attrW(UDI_TEXT("wCommand"), command_)
+                   .enumOf(UDI_TEXT("None|Energize|Release|ClearFault")).def(CMD_NONE)
                    .onWrite(onCommandWritten, this));
-        d.attr(attrR("rCommandResult", commandResult_).enumOf(commandResultNames()));
-        d.attr(attrR("rEnergized", energized_));
+        d.attr(attrR(UDI_TEXT("rCommandResult"), commandResult_).enumOf(commandResultNames()));
+        d.attr(attrR(UDI_TEXT("rEnergized"), energized_));
     }
 
     // ------------------------------------------------------------
@@ -186,13 +188,6 @@ private:
     // yields the right elapsed value.
     static uint32_t elapsedMs(uint32_t now, uint32_t since) { return now - since; }
 
-    static const AttrEnumEntry (&commandNames())[4] {
-        static const AttrEnumEntry names[4] = {
-            {CMD_NONE, "None"}, {CMD_ENERGIZE, "Energize"}, {CMD_RELEASE, "Release"},
-            {CMD_CLEAR_FAULT, "ClearFault"},
-        };
-        return names;
-    }
 
     // release() cannot be refused (releasing an idle coil is a no-op),
     // so only energize() and clearFault() can come back REJECTED.

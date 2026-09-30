@@ -20,6 +20,7 @@ static void check(bool cond, const char* label) {
 static bool streq(const char* a, const char* b) {
     return a != nullptr && b != nullptr && strcmp(a, b) == 0;
 }
+static bool textIs(const AttrText* t, const char* s) { return attrTextEquals(t, s, strlen(s)); }
 
 // Records up to 8 children and 8 attributes, in the order listed.
 class RecordingDescriber final : public IDescriber {
@@ -54,8 +55,8 @@ public:
     void describe(IDescriber& d) override {
         d.child("left", left_);
         d.child("right", right_);
-        d.attr(attrIn("ioSupplyVolts", supplyVolts_, "V"));
-        d.attr(attrOut("ioFanPwm", fanPwm_));
+        d.attr(attrIn(UDI_TEXT("ioSupplyVolts"), supplyVolts_, UDI_TEXT("V")));
+        d.attr(attrOut(UDI_TEXT("ioFanPwm"), fanPwm_));
     }
     bool isOnline() const override { return left_.isOnline(); }
     DeviceState getState() const override { return DeviceState::IDLE; }
@@ -107,24 +108,29 @@ int main() {
 
         check(rec.childCount == 0 && rec.attrCount == 4,                      "no children, four attributes");
         const Attr& cnf = rec.attrs[0];
-        check(streq(cnf.name, "cnfMaxOnTimeMs") && cnf.cls == AttrClass::MOUNT, "cnfMaxOnTimeMs is a mount attribute");
-        check(cnf.type == AttrType::U32 && streq(cnf.unit, "ms"),             "type u32 deduced from the member, unit ms");
+        check(textIs(cnf.name, "cnfMaxOnTimeMs") && cnf.cls == AttrClass::MOUNT, "cnfMaxOnTimeMs is a mount attribute");
+        check(cnf.type == AttrType::U32 && textIs(cnf.unit, "ms"),             "type u32 deduced from the member, unit ms");
         check(*static_cast<uint32_t*>(cnf.value) == 500,                      "value points at maxOnTimeMs_ (500)");
         check(cnf.hasMin() && cnf.minimum.u == 1 && !cnf.hasMax(),            "range 1 .. NO_MAX");
         check(!cnf.hasDefault(),                                              "no default: a mount value without one must be configured");
 
         const Attr& w = rec.attrs[1];
-        check(streq(w.name, "wCommand") && w.cls == AttrClass::W && w.type == AttrType::U8, "wCommand is w, u8");
+        check(textIs(w.name, "wCommand") && w.cls == AttrClass::W && w.type == AttrType::U8, "wCommand is w, u8");
         check(w.hasEnum() && w.enumCount == 4 && w.writeHook.fn != nullptr,  "wCommand has four choices and a hook");
-        check(streq(w.enumName(SolenoidDevice::CMD_CLEAR_FAULT), "ClearFault") && w.enumName(9) == nullptr,
-              "enumName() finds a choice, nullptr for a value outside the list");
+        char name[16];
+        check(w.enumName(SolenoidDevice::CMD_CLEAR_FAULT, name, sizeof(name)) && streq(name, "ClearFault"),
+              "enumName() finds a choice by its position");
+        check(!w.enumName(4, name, sizeof(name)) && name[0] == '\0' && !w.inEnum(-1),
+              "and refuses a value outside 0..count-1");
+        check(!w.enumName(SolenoidDevice::CMD_CLEAR_FAULT, name, 5) && streq(name, "Clea"),
+              "a short buffer is cut, terminated and reported");
         check(w.hasDefault() && w.defaultValue.u == SolenoidDevice::CMD_NONE, "wCommand defaults to None");
 
         const Attr& res = rec.attrs[2];
-        check(streq(res.name, "rCommandResult") && res.cls == AttrClass::R && res.enumCount == 5,
+        check(textIs(res.name, "rCommandResult") && res.cls == AttrClass::R && res.enumCount == 5,
               "rCommandResult is r with the shared result names");
         const Attr& r = rec.attrs[3];
-        check(streq(r.name, "rEnergized") && r.cls == AttrClass::R && r.type == AttrType::BOOL, "rEnergized is r, bool");
+        check(textIs(r.name, "rEnergized") && r.cls == AttrClass::R && r.type == AttrType::BOOL, "rEnergized is r, bool");
         check(r.dir == AttrDir::NONE && r.writeHook.fn == nullptr && !r.hasEnum(),
               "r has no direction, no hook and NO_ENUM");
 
@@ -188,21 +194,31 @@ int main() {
     {
         printf("\n-- 5. types, limits in the attribute's own type, names --\n");
         double d = 0; int16_t i16 = 0; int32_t i32 = 0; float f = 0; uint8_t u8 = 0;
-        check(attrR("x", d).type == (sizeof(double) == 8 ? AttrType::F64 : AttrType::F32), "double is f64 (f32 where double is 4 bytes)");
-        check(attrR("x", i16).type == AttrType::I16 && attrR("x", i32).type == AttrType::I32, "fixed-width integers keep their width");
+        const AttrText* x = UDI_TEXT("x");
+        check(attrR(x, d).type == (sizeof(double) == 8 ? AttrType::F64 : AttrType::F32), "double is f64 (f32 where double is 4 bytes)");
+        check(attrR(x, i16).type == AttrType::I16 && attrR(x, i32).type == AttrType::I32, "fixed-width integers keep their width");
+        check(attrR(x, i16).unit == nullptr, "no unit is nullptr");
 
-        Attr a = attrSetup("cnfVMax", f, "rad/s").range(0, 1.5).def(1);
+        Attr a = attrSetup(UDI_TEXT("cnfVMax"), f, UDI_TEXT("rad/s")).range(0, 1.5).def(1);
         check(a.minimum.f == 0.0f && a.maximum.f == 1.5f && a.defaultValue.f == 1.0f, "float limits are stored as float");
-        Attr b = attrR("rCount", i32).range(-2147483647 - 1, 2147483647);
+        Attr b = attrR(UDI_TEXT("rCount"), i32).range(-2147483647 - 1, 2147483647);
         check(b.minimum.i == INT32_MIN && b.maximum.i == INT32_MAX,        "i32 limits are exact at both ends");
-        Attr c = attrMount("cnfPin", u8).range(NO_MIN, 53);
+        Attr c = attrMount(UDI_TEXT("cnfPin"), u8).range(NO_MIN, 53);
         check(!c.hasMin() && c.hasMax() && c.maximum.u == 53,               "NO_MIN leaves the low end open");
-        Attr e = attrW("wX", u8);
+        Attr e = attrW(UDI_TEXT("wX"), u8);
         check(!e.hasMin() && !e.hasMax() && !e.hasDefault() && !e.hasEnum(), "nothing set: NO_MIN, NO_MAX, no default, NO_ENUM");
 
         check(streq(attrClassToString(AttrClass::MOUNT), "mount") && streq(attrClassToString(AttrClass::SETUP), "setup"),
               "mount and setup print by kind");
         check(streq(attrTypeToString(AttrType::U16), "u16"),               "types print as text");
+
+        char field[8];
+        const AttrText* list = UDI_TEXT("A|Bb|");
+        check(attrTextField(list, 1, field, sizeof(field)) && streq(field, "Bb"), "attrTextField() reads a middle field");
+        check(attrTextField(list, 2, field, sizeof(field)) && streq(field, ""),   "an empty last field is a field");
+        check(!attrTextField(list, 3, field, sizeof(field)),                      "past the end there is none");
+        check(attrTextEquals(UDI_TEXT("wCmd"), "wCmdX", 4) && !attrTextEquals(UDI_TEXT("wCmd"), "wCm", 3),
+              "attrTextEquals() matches whole text only");
     }
 
     printf("\n%d passed, %d failed\n", s_passed, s_failed);
