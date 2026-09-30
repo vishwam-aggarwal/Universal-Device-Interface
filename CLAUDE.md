@@ -82,13 +82,26 @@ a dependency here, ever.
 `IMotorDriver.h` had already pulled it in). Same typedef, so no printer function anywhere
 changes.
 
-**`src/Attr.h`** — `Attr {name, cls, type, dir, value, unit, onWrite}`: one exposed value
-that POINTS AT the device's own member (no copy, no registry). Classes `cnf`/`w`/`r`/`io`,
-`io` with a direction `IN`/`OUT` seen from the device. `AttrType` is deduced from the
-variable by the `attrCnf/attrW/attrR/attrIn/attrOut` helpers, so type and pointer can't
-disagree; an unsupported type (enum, `long`, `char`) doesn't compile on purpose.
-`AttrWriteHook {fn, ctx}` runs after a write is stored. Applying writes is the framework's
-job, not this library's.
+**`src/Attr.h`** (v2, 2026-09-30) — `Attr`: one exposed value that POINTS AT the device's
+own member (no copy, no registry), plus its rules, all built on the stack in `describe()`
+so they cost no RAM between calls. Classes `MOUNT` (cnf, set once before `begin()`),
+`SETUP` (cnf, runtime but not while BUSY), `W`, `R`, `IO` (with `IN`/`OUT` seen from the
+device). `minimum`/`maximum`/`defaultValue` are an `AttrNumber` union in the attribute's
+own kind of number (flags say which are set; absent = `NO_MIN`/`NO_MAX`/no default; a
+mount attribute with no default must be configured). `enumEntries`/`enumCount` point at a
+static `AttrEnumEntry {value, name}` table (nullptr = NO_ENUM). `AttrType` is deduced by the
+`attrMount/attrSetup/attrW/attrR/attrIn/attrOut` helpers, so type and pointer can't
+disagree; an unsupported type (C++ enum, `long`, `char`) doesn't compile on purpose.
+Chained `.range(lo, hi)` (either may be `NO_MIN`/`NO_MAX`), `.def(v)`, `.enumOf(table)`,
+`.onWrite(fn, ctx)`. Fields are `minimum`/`maximum`, never `min`/`max`: Arduino.h defines
+those as macros. CHECKING AND APPLYING WRITES IS THE FRAMEWORK'S JOB, NOT THIS LIBRARY'S:
+UDF refuses out-of-range and non-enum values (never clamps).
+
+**`src/DeviceCommand.h`** — the one way to command a device: a u8 `wCommand` whose
+enumeration lists the device's verbs (0 = None), run by its write hook; a write is an
+event, not a level; arguments are w attributes written first (CiA 402 pattern); outcome in
+`rCommandResult` (`RESULT_NONE/RUNNING/DONE/REJECTED/FAILED`, names from
+`commandResultNames()`). The device's C++ methods stay and the hook calls them.
 
 **`src/IDescriber.h`** — the visitor `describe()` calls: `child(name, device)` and
 `attr(attr)`. Protected non-virtual destructor (never deleted through the interface; keeps
@@ -114,9 +127,10 @@ the global error sink printing to Serial, every state transition printed via
 legal 1 s pulse, then a deliberately-forgotten `release()` so the 2 s cutoff fires,
 `clearFault()`, repeat.
 
-`SolenoidDevice::describe()` lists `cnfMaxOnTimeMs`, `wEnergize` (write hook runs
-`energize()`/`release()`) and `rEnergized`. A `w` attribute holds the last request; the `r`
-attribute is the truth (a cutoff releases the coil without touching `wEnergize`).
+`SolenoidDevice::describe()` lists `cnfMaxOnTimeMs` (mount, 1 .. NO_MAX, no default),
+`wCommand` (None / Energize / Release / ClearFault), `rCommandResult` and `rEnergized`. A `w`
+attribute holds the last request; the `r` attribute is the truth (a cutoff releases the
+coil without touching `wCommand`).
 
 **`tests/test_device_sink.cpp`** — two deliberately non-motion test doubles defined in the
 test itself (`MockSolenoid`: has a real busy concept; `MockCurrentSensor`: pure sensor,
@@ -129,8 +143,9 @@ limit, the cutoff (sticky, reported once, coil off, `energize()` refused silentl
 `ERRORED`), recovery, `millis()` wrap, and no-sink operation via `IDevice*`.
 
 **`tests/test_describe.cpp`** — `describe()`, `Attr` and `end()` through a recording
-describer: defaults, the solenoid's attributes and hook, a parent with two children and
-`io` in both directions, type deduction.
+describer: defaults, the solenoid's attributes with ranges, defaults and enums, every
+command through `wCommand` and its result, a parent with two children and `io` in both
+directions, type deduction and exact limits.
 
 ### Three-tier State / Status / Error — the core design decision
 
