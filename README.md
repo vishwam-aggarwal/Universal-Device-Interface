@@ -68,8 +68,14 @@ This library depends on nothing. Everything else depends on it.
 
 ## Features
 
-- `IDevice` — abstract base: `begin()`, optional `update()`, `isOnline()`, `getState()`,
-  `getStatus()`, `getError()`, `getStatusString()`, `getErrorString()`, `getDeviceName()`.
+- `IDevice` — abstract base: `begin()`, optional `update()` and `end()`, `isOnline()`,
+  `getState()`, `getStatus()`, `getError()`, `getStatusString()`, `getErrorString()`,
+  `getDeviceName()`, and an optional `describe()`.
+- `describe(IDescriber&)` + `Attr` — a device lists the devices it mounts and the
+  attributes (`cnf` / `w` / `r` / `io`) it exposes, pointing at its own members. Nothing is
+  stored; [Universal-Device-Framework](https://github.com/vishwam-aggarwal/Universal-Device-Framework)
+  builds its device tree on it. Defaults to listing nothing, so existing devices are
+  unchanged.
 - `DeviceState` — one real, shared `enum class` (`OFFLINE` / `IDLE` / `BUSY` / `ERRORED`)
   so generic code can hold a mixed list of `IDevice*` and branch on state without knowing
   the concrete type.
@@ -207,6 +213,10 @@ directly.
    whether that fault latches — `reportError()` itself never changes state.
 5. Keep hardware I/O out of the interface header: inject it (as `SolenoidDevice` does with
    `SolenoidPort`) or put it in a separate Arduino-only backend `.cpp`.
+6. Optional: override `describe()` to list the devices you own (`d.child("name", member)`)
+   and the values you expose (`d.attr(attrR("rName", member_))`, `attrCnf`, `attrW`,
+   `attrIn`, `attrOut`). Names carry their class as a prefix and never contain `/` or `.`.
+   Override `end()` if the device must leave hardware safe on teardown.
 
 ---
 
@@ -224,6 +234,8 @@ public:
 
     virtual bool begin() = 0;
     virtual void update() {}                       // optional; default no-op
+    virtual void end() {}                          // optional teardown; default no-op
+    virtual void describe(IDescriber& d) {}        // optional; default lists nothing
 
     virtual bool        isOnline() const = 0;
     virtual DeviceState getState() const = 0;     // shared, canonical
@@ -382,6 +394,10 @@ run `.vscode/build-debug.bat`, which configures with NMake from a VS developer s
   `SolenoidPort` with a hand-advanced clock: rejected-before-`begin()` (reported, not
   latched), the protective cutoff (latched, reported once, coil forced off), recovery,
   `millis()` wrap-around, and operation with no sink installed.
+- `tests/test_describe.cpp` walks `describe()` with a recording describer: the defaults
+  list nothing, `SolenoidDevice`'s three attributes point at its own members, a write
+  through the `wEnergize` hook runs the command, a parent lists its children and `io`
+  attributes, `end()` dispatches, and `Attr` types are deduced from the variables.
 
 **On hardware**: `arduino-cli compile --fqbn arduino:renesas_uno:unor4wifi -u -p <port>
 examples/SolenoidDeviceDemo`, then open a 115200-baud monitor. The UNO R4 WiFi's native USB

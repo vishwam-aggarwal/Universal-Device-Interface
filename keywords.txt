@@ -5,10 +5,27 @@ DeviceState	KEYWORD1
 GlobalErrorSink	KEYWORD1
 SolenoidDevice	KEYWORD1
 SolenoidPort	KEYWORD1
+IDescriber	KEYWORD1
+Attr	KEYWORD1
+AttrClass	KEYWORD1
+AttrDir	KEYWORD1
+AttrType	KEYWORD1
+AttrWriteHook	KEYWORD1
 
 # Methods (orange)
 begin	KEYWORD2
 update	KEYWORD2
+end	KEYWORD2
+describe	KEYWORD2
+child	KEYWORD2
+attr	KEYWORD2
+attrCnf	KEYWORD2
+attrW	KEYWORD2
+attrR	KEYWORD2
+attrIn	KEYWORD2
+attrOut	KEYWORD2
+attrClassToString	KEYWORD2
+attrTypeToString	KEYWORD2
 isOnline	KEYWORD2
 getState	KEYWORD2
 getStatus	KEYWORD2

@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include "GlobalErrorSink.h"
+#include "IDescriber.h"
 
 // ==================================================================
 // IDevice -- the shared base class for every device-shaped interface in
@@ -10,9 +11,11 @@
 // solenoid, a safety supervisor, ...).
 //
 // Nothing here is motion-specific. IDevice only unifies the parts that
-// every device already had in common: lifecycle (begin/update), a
+// every device already had in common: lifecycle (begin/update/end), a
 // coarse machine state, device-specific status/error detail, an identity
-// string, and one process-wide error sink.
+// string, and one process-wide error sink. Plus describe(), which lets
+// generic code walk the devices a device mounts and the attributes it
+// exposes (Universal-Device-Framework builds its device tree on it).
 //
 // Deliberately NOT here: enable()/disable()/clearErrors()/servoOn()/
 // servoOff(). That is where the domains genuinely diverge (motors "servo
@@ -81,6 +84,24 @@ public:
     // interface that wants it mandatory can re-declare it as
     // `void update() override = 0;`.
     virtual void update() {}
+
+    // Optional teardown, the mirror of begin(): leave the hardware safe
+    // and release what begin() took. Defaults to a no-op, because most
+    // small devices are never torn down (an MCU just loses power); an
+    // application process on Linux is, and its devices need a place to
+    // put that.
+    virtual void end() {}
+
+    // ------------------------------------------------------------
+    // Device tree
+    // ------------------------------------------------------------
+    // List the devices this one mounts and the attributes it exposes,
+    // by calling d.child() and d.attr() -- see IDescriber.h for the
+    // rules. Defaults to listing nothing, so every existing device is
+    // a valid leaf with no attributes until it chooses to describe
+    // itself. Not const: an Attr points at the device's own variables,
+    // and some of those are written through it.
+    virtual void describe(IDescriber& d) { (void)d; }
 
     // ------------------------------------------------------------
     // State / status / error introspection

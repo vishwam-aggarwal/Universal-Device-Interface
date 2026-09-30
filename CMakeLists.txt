@@ -21,3 +21,7 @@ target_link_libraries(test_solenoid_device PRIVATE device)
 enable_testing()
 add_test(NAME device_sink     COMMAND test_device_sink)
 add_test(NAME solenoid_device COMMAND test_solenoid_device)
+
+add_executable(test_describe tests/test_describe.cpp)
+target_link_libraries(test_describe PRIVATE device)
+add_test(NAME describe COMMAND test_describe)
