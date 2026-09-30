@@ -72,10 +72,14 @@ This library depends on nothing. Everything else depends on it.
   `getState()`, `getStatus()`, `getError()`, `getStatusString()`, `getErrorString()`,
   `getDeviceName()`, and an optional `describe()`.
 - `describe(IDescriber&)` + `Attr` — a device lists the devices it mounts and the
-  attributes (`cnf` / `w` / `r` / `io`) it exposes, pointing at its own members. Nothing is
-  stored; [Universal-Device-Framework](https://github.com/vishwam-aggarwal/Universal-Device-Framework)
+  attributes it exposes, pointing at its own members. Every attribute carries its class
+  (`cnf` mount, `cnf` setup, `w`, `r`, `io`), type, unit, range (`NO_MIN` / `NO_MAX`),
+  default and, optionally, an enumeration of named choices. Nothing is stored; [Universal-Device-Framework](https://github.com/vishwam-aggarwal/Universal-Device-Framework)
   builds its device tree on it. Defaults to listing nothing, so existing devices are
   unchanged.
+- `DeviceCommand.h` — the standard way to command a device: one `wCommand` attribute whose
+  enumeration lists the device's verbs, and an `rCommandResult` (None / Running / Done /
+  Rejected / Failed) that says what happened.
 - `DeviceState` — one real, shared `enum class` (`OFFLINE` / `IDLE` / `BUSY` / `ERRORED`)
   so generic code can hold a mixed list of `IDevice*` and branch on state without knowing
   the concrete type.
@@ -214,8 +218,12 @@ directly.
 5. Keep hardware I/O out of the interface header: inject it (as `SolenoidDevice` does with
    `SolenoidPort`) or put it in a separate Arduino-only backend `.cpp`.
 6. Optional: override `describe()` to list the devices you own (`d.child("name", member)`)
-   and the values you expose (`d.attr(attrR("rName", member_))`, `attrCnf`, `attrW`,
-   `attrIn`, `attrOut`). Names carry their class as a prefix and never contain `/` or `.`.
+   and the values you expose, one line each, e.g.
+   `d.attr(attrSetup("cnfVMax", vMax_, "rad/s").range(0.0f, 10.0f).def(2.0f))`. Helpers:
+   `attrMount`, `attrSetup`, `attrW`, `attrR`, `attrIn`, `attrOut`; chain `.range()`,
+   `.def()`, `.enumOf()`, `.onWrite()`. Names carry their class as a prefix (`cnf`, `w`,
+   `r`, `io`) and never contain `/` or `.`. Take commands through one `wCommand`
+   (`DeviceCommand.h`), as `SolenoidDevice` does.
    Override `end()` if the device must leave hardware safe on teardown.
 
 ---
@@ -395,9 +403,10 @@ run `.vscode/build-debug.bat`, which configures with NMake from a VS developer s
   latched), the protective cutoff (latched, reported once, coil forced off), recovery,
   `millis()` wrap-around, and operation with no sink installed.
 - `tests/test_describe.cpp` walks `describe()` with a recording describer: the defaults
-  list nothing, `SolenoidDevice`'s three attributes point at its own members, a write
-  through the `wEnergize` hook runs the command, a parent lists its children and `io`
-  attributes, `end()` dispatches, and `Attr` types are deduced from the variables.
+  list nothing, `SolenoidDevice`'s four attributes point at its own members with their
+  ranges, defaults and enumerations, `wCommand` runs each command and `rCommandResult`
+  reports it, a parent lists its children and `io` attributes, `end()` dispatches, and
+  types and limits are deduced and stored exactly.
 
 **On hardware**: `arduino-cli compile --fqbn arduino:renesas_uno:unor4wifi -u -p <port>
 examples/SolenoidDeviceDemo`, then open a 115200-baud monitor. The UNO R4 WiFi's native USB

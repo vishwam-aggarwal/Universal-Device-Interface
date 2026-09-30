@@ -1,32 +1,40 @@
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 // ==================================================================
 // Attr -- one named value a device exposes to the outside world.
 //
 // A device lists its attributes in IDevice::describe() (see
-// IDescriber.h). Each Attr POINTS AT THE DEVICE'S OWN MEMBER VARIABLE;
-// it holds no value of its own, so exposing a variable costs no RAM
-// beyond the Attr built on the stack while describe() runs.
+// IDescriber.h). Each Attr POINTS AT THE DEVICE'S OWN MEMBER VARIABLE
+// and carries that value's rules: its range, its default and, for a
+// value with named choices, its enumeration. Everything in an Attr is
+// built on the stack while describe() runs, so the rules cost no RAM
+// between calls, only the member itself does.
 //
-// Four classes, the naming prefix every attribute name carries:
-//   cnf -- configuration. Set before running; refused while the device
-//          is BUSY (enforced by whoever applies writes, not here).
-//   w   -- command. Written from outside while running.
-//   r   -- read-only. The device computes it; nobody else writes it.
-//   io  -- process data, exchanged every period through a link.
-//          Direction is from the device's point of view: IN is read
-//          by the device, OUT is written by it.
+// Five classes. The name of every attribute starts with its prefix:
+//   cnf (mount) -- set once, before begin(): pins, bus addresses, gear
+//                  ratios. Refused once the device is running.
+//   cnf (setup) -- configuration that may change at runtime, but never
+//                  while the device is BUSY: speed limits, gains.
+//   w           -- a request, written from outside while running. Every
+//                  device takes its commands through ONE w attribute,
+//                  wCommand (see DeviceCommand.h).
+//   r           -- computed by the device; nobody else writes it.
+//   io          -- process data, exchanged every period through a link.
+//                  Direction is from the device's point of view: IN is
+//                  read by the device, OUT is written by it.
 //
-// Nothing here applies writes or reads values: that belongs to the
-// framework built on top (Universal-Device-Framework). This header
-// only fixes the shape every device describes itself with.
+// Nothing here checks or applies a write: that belongs to the framework
+// built on top (Universal-Device-Framework), so every device gets the
+// same rules and no device repeats them. This header only fixes the
+// shape every device describes itself with.
 //
 // Plain C++11, no Arduino dependency, no heap.
 // ==================================================================
 
-enum class AttrClass : uint8_t { CNF = 0, W = 1, R = 2, IO = 3 };
+enum class AttrClass : uint8_t { MOUNT = 0, SETUP = 1, W = 2, R = 3, IO = 4 };
 
 enum class AttrDir : uint8_t {
     NONE = 0,   // cnf, w and r: the class already says who writes it
@@ -38,32 +46,135 @@ enum class AttrDir : uint8_t {
 // the same thing on AVR, ARM and Linux when it crosses a wire.
 enum class AttrType : uint8_t { BOOL, U8, I8, U16, I16, U32, I32, F32, F64 };
 
+// A limit or a default, held in the attribute's own kind of number so
+// an i32 limit stays exact and a float one is not rounded. Which member
+// is valid follows Attr::type: u for BOOL and the unsigned types, i for
+// the signed ones, f for F32, d for F64.
+union AttrNumber {
+    uint32_t u;
+    int32_t  i;
+    float    f;
+    double   d;
+};
+
+// One named choice of an enumerated attribute. Tables are static const
+// arrays next to the device; an Attr only points at them.
+struct AttrEnumEntry {
+    int32_t     value;
+    const char* name;
+};
+
+// NO_MIN and NO_MAX are passed to range() for an open end.
+struct AttrNoLimit {};
+static const AttrNoLimit NO_MIN = AttrNoLimit();
+static const AttrNoLimit NO_MAX = AttrNoLimit();
+
 struct Attr;
 
 // Optional reaction to a write, called by the framework AFTER the new
-// value is stored and before the next update(). Lets a device turn a
-// write into an action ("selecting a command runs it") or correct the
-// stored value. Same {fn, ctx} shape as every hook in the family.
+// value is checked and stored and before the next update(). Lets a
+// device turn a write into an action (wCommand runs the command). Same
+// {fn, ctx} shape as every hook in the family.
 struct AttrWriteHook {
     void (*fn)(const Attr& attr, void* ctx);
     void* ctx;
 };
 
 struct Attr {
-    const char*   name;     // "rEnergized"; no '/' or '.' (they build paths)
-    AttrClass     cls;
-    AttrType      type;
-    AttrDir       dir;
-    void*         value;    // the device's own variable, of type `type`
-    const char*   unit;     // "ms", "rad", "" when unitless; never null
-    AttrWriteHook onWrite;  // {nullptr, nullptr} when the device needs none
+    // Which of minimum, maximum and defaultValue were given. Absent means NO_MIN, NO_MAX
+    // or no default.
+    enum Flags : uint8_t { HAS_MIN = 1, HAS_MAX = 2, HAS_DEFAULT = 4 };
+
+    const char*          name;       // "rEnergized"; no '/' or '.' (they build paths)
+    AttrClass            cls;
+    AttrType             type;
+    AttrDir              dir;
+    uint8_t              flags;
+    void*                value;      // the device's own variable, of type `type`
+    const char*          unit;       // "ms", "rad", "" when unitless; never null
+    AttrNumber           minimum;
+    AttrNumber           maximum;
+    AttrNumber           defaultValue;  // used when nothing configured the value
+    const AttrEnumEntry* enumEntries;   // nullptr: NO_ENUM
+    uint8_t              enumCount;
+    AttrWriteHook        writeHook;     // {nullptr, nullptr} when the device needs none
+
+    // --------------------------------------------------------------
+    // Chained setters, so one describe() line declares one attribute:
+    //   d.attr(attrSetup("cnfVMax", vMax_, "rad/s").range(0.0f, 10.0f).def(2.0f));
+    // (Named minimum/maximum, not min/max: Arduino.h defines min() and
+    // max() as macros.)
+    // Each converts its argument to the attribute's own type, so
+    // range(0, 53) is fine for a uint8_t and range(0, 1.5f) for a float.
+    // --------------------------------------------------------------
+    template <typename Lo, typename Hi>
+    Attr& range(Lo lo, Hi hi) {
+        setMin(lo);
+        setMax(hi);
+        return *this;
+    }
+
+    template <typename V>
+    Attr& def(V v) {
+        store(defaultValue, v);
+        flags = static_cast<uint8_t>(flags | HAS_DEFAULT);
+        return *this;
+    }
+
+    // For integer attributes only (the framework refuses a write that is
+    // not one of the listed values).
+    template <size_t N>
+    Attr& enumOf(const AttrEnumEntry (&entries)[N]) {
+        static_assert(N > 0 && N <= 255, "an enumeration has 1 to 255 entries");
+        enumEntries = entries;
+        enumCount   = static_cast<uint8_t>(N);
+        return *this;
+    }
+
+    Attr& onWrite(void (*fn)(const Attr&, void*), void* ctx) {
+        writeHook.fn  = fn;
+        writeHook.ctx = ctx;
+        return *this;
+    }
+
+    bool hasMin() const     { return (flags & HAS_MIN) != 0; }
+    bool hasMax() const     { return (flags & HAS_MAX) != 0; }
+    bool hasDefault() const { return (flags & HAS_DEFAULT) != 0; }
+    bool hasEnum() const    { return enumEntries != nullptr; }
+
+    // The name of an enumeration value, or nullptr when it has none.
+    const char* enumName(int32_t v) const {
+        for (uint8_t i = 0; i < enumCount; ++i) {
+            if (enumEntries[i].value == v) return enumEntries[i].name;
+        }
+        return nullptr;
+    }
+
+private:
+    template <typename V> void setMin(V v) { store(minimum, v); flags = static_cast<uint8_t>(flags | HAS_MIN); }
+    template <typename V> void setMax(V v) { store(maximum, v); flags = static_cast<uint8_t>(flags | HAS_MAX); }
+    void setMin(AttrNoLimit) {}
+    void setMax(AttrNoLimit) {}
+
+    template <typename V>
+    void store(AttrNumber& n, V v) const {
+        switch (type) {
+            case AttrType::F32: n.f = static_cast<float>(v);  break;
+            case AttrType::F64: n.d = static_cast<double>(v); break;
+            case AttrType::I8: case AttrType::I16: case AttrType::I32:
+                n.i = static_cast<int32_t>(v); break;
+            default:
+                n.u = static_cast<uint32_t>(v); break;
+        }
+    }
 };
 
 // ------------------------------------------------------------------
 // Type deduction. The helpers below take the AttrType from the
 // variable itself, so a mismatch between `type` and `value` cannot be
 // written by hand. A variable of any other type (an enum, long on a
-// 64-bit host, char) does not compile -- on purpose.
+// 64-bit host, char) does not compile -- on purpose. An enumerated
+// attribute is backed by a fixed-width integer, not a C++ enum.
 // ------------------------------------------------------------------
 inline AttrType attrTypeOf(bool*)     { return AttrType::BOOL; }
 inline AttrType attrTypeOf(uint8_t*)  { return AttrType::U8; }
@@ -77,47 +188,53 @@ inline AttrType attrTypeOf(float*)    { return AttrType::F32; }
 inline AttrType attrTypeOf(double*)   { return sizeof(double) == 8 ? AttrType::F64 : AttrType::F32; }
 
 template <typename T>
-inline Attr makeAttr(const char* name, AttrClass cls, AttrDir dir, T& value,
-                     const char* unit, AttrWriteHook onWrite) {
-    Attr a = { name, cls, attrTypeOf(&value), dir, &value, unit, onWrite };
+inline Attr makeAttr(const char* name, AttrClass cls, AttrDir dir, T& value, const char* unit) {
+    Attr a = Attr();
+    a.name  = name;
+    a.cls   = cls;
+    a.type  = attrTypeOf(&value);
+    a.dir   = dir;
+    a.value = &value;
+    a.unit  = unit;
     return a;
 }
 
 // One helper per class, so a describe() line reads as what it declares.
-// Only cnf and w take a write hook: r and io-out are never written from
-// outside, and io-in is overwritten every period by its link.
 template <typename T>
-inline Attr attrCnf(const char* name, T& value, const char* unit = "",
-                    AttrWriteHook onWrite = AttrWriteHook{nullptr, nullptr}) {
-    return makeAttr(name, AttrClass::CNF, AttrDir::NONE, value, unit, onWrite);
+inline Attr attrMount(const char* name, T& value, const char* unit = "") {
+    return makeAttr(name, AttrClass::MOUNT, AttrDir::NONE, value, unit);
 }
 template <typename T>
-inline Attr attrW(const char* name, T& value, const char* unit = "",
-                  AttrWriteHook onWrite = AttrWriteHook{nullptr, nullptr}) {
-    return makeAttr(name, AttrClass::W, AttrDir::NONE, value, unit, onWrite);
+inline Attr attrSetup(const char* name, T& value, const char* unit = "") {
+    return makeAttr(name, AttrClass::SETUP, AttrDir::NONE, value, unit);
+}
+template <typename T>
+inline Attr attrW(const char* name, T& value, const char* unit = "") {
+    return makeAttr(name, AttrClass::W, AttrDir::NONE, value, unit);
 }
 template <typename T>
 inline Attr attrR(const char* name, T& value, const char* unit = "") {
-    return makeAttr(name, AttrClass::R, AttrDir::NONE, value, unit, AttrWriteHook{nullptr, nullptr});
+    return makeAttr(name, AttrClass::R, AttrDir::NONE, value, unit);
 }
 template <typename T>
 inline Attr attrIn(const char* name, T& value, const char* unit = "") {
-    return makeAttr(name, AttrClass::IO, AttrDir::IN, value, unit, AttrWriteHook{nullptr, nullptr});
+    return makeAttr(name, AttrClass::IO, AttrDir::IN, value, unit);
 }
 template <typename T>
 inline Attr attrOut(const char* name, T& value, const char* unit = "") {
-    return makeAttr(name, AttrClass::IO, AttrDir::OUT, value, unit, AttrWriteHook{nullptr, nullptr});
+    return makeAttr(name, AttrClass::IO, AttrDir::OUT, value, unit);
 }
 
 // For logging and the text debug print. enum class has no implicit
 // conversion to an integer, same reason deviceStateToString() exists.
 inline const char* attrClassToString(AttrClass cls) {
     switch (cls) {
-        case AttrClass::CNF: return "cnf";
-        case AttrClass::W:   return "w";
-        case AttrClass::R:   return "r";
-        case AttrClass::IO:  return "io";
-        default:             return "?";
+        case AttrClass::MOUNT: return "mount";
+        case AttrClass::SETUP: return "setup";
+        case AttrClass::W:     return "w";
+        case AttrClass::R:     return "r";
+        case AttrClass::IO:    return "io";
+        default:               return "?";
     }
 }
 

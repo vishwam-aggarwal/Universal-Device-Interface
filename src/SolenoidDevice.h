@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include "DeviceCommand.h"
 #include "IDevice.h"
 
 // ==================================================================
@@ -146,14 +147,26 @@ public:
     // ------------------------------------------------------------
     // Device tree
     // ------------------------------------------------------------
-    // wEnergize shows the write hook: writing it RUNS energize() or
-    // release(). It keeps the last command written, which is not always
-    // what happened (a faulted coil refuses to energize, the cutoff
-    // releases it). THE TRUTH IS rEnergized: a w attribute is a request,
-    // an r attribute is the state.
+    // Commands, as wCommand values. 0 is always None (DeviceCommand.h).
+    enum Command : uint8_t {
+        CMD_NONE        = 0,
+        CMD_ENERGIZE    = 1,
+        CMD_RELEASE     = 2,
+        CMD_CLEAR_FAULT = 3,
+    };
+
+    // cnfMaxOnTimeMs is a MOUNT attribute with no default: it is the
+    // coil's rating, so it must be given at boot and never changes while
+    // running. wCommand runs energize()/release()/clearFault() through
+    // its write hook; rCommandResult says whether it was accepted.
+    // wCommand keeps the last command written, which is not always what
+    // happened (the cutoff releases the coil on its own). THE TRUTH IS
+    // rEnergized: a w attribute is a request, an r attribute is the state.
     void describe(IDescriber& d) override {
-        d.attr(attrCnf("cnfMaxOnTimeMs", maxOnTimeMs_, "ms"));
-        d.attr(attrW("wEnergize", wEnergize_, "", AttrWriteHook{onEnergizeWritten, this}));
+        d.attr(attrMount("cnfMaxOnTimeMs", maxOnTimeMs_, "ms").range(1, NO_MAX));
+        d.attr(attrW("wCommand", command_).enumOf(commandNames()).def(CMD_NONE)
+                   .onWrite(onCommandWritten, this));
+        d.attr(attrR("rCommandResult", commandResult_).enumOf(commandResultNames()));
         d.attr(attrR("rEnergized", energized_));
     }
 
@@ -173,9 +186,26 @@ private:
     // yields the right elapsed value.
     static uint32_t elapsedMs(uint32_t now, uint32_t since) { return now - since; }
 
-    static void onEnergizeWritten(const Attr&, void* ctx) {
+    static const AttrEnumEntry (&commandNames())[4] {
+        static const AttrEnumEntry names[4] = {
+            {CMD_NONE, "None"}, {CMD_ENERGIZE, "Energize"}, {CMD_RELEASE, "Release"},
+            {CMD_CLEAR_FAULT, "ClearFault"},
+        };
+        return names;
+    }
+
+    // release() cannot be refused (releasing an idle coil is a no-op),
+    // so only energize() and clearFault() can come back REJECTED.
+    static void onCommandWritten(const Attr&, void* ctx) {
         SolenoidDevice* self = static_cast<SolenoidDevice*>(ctx);
-        if (self->wEnergize_) self->energize(); else self->release();
+        bool ok = true;
+        switch (self->command_) {
+            case CMD_ENERGIZE:    ok = self->energize();   break;
+            case CMD_RELEASE:     self->release();         break;
+            case CMD_CLEAR_FAULT: ok = self->clearFault(); break;
+            default:              return;                  // None: nothing to run
+        }
+        self->commandResult_ = ok ? RESULT_DONE : RESULT_REJECTED;
     }
 
     const char*  name_;
@@ -186,5 +216,6 @@ private:
     bool     energized_     = false;
     uint32_t energizedAtMs_ = 0;
     uint32_t error_         = ERR_NONE;
-    bool     wEnergize_     = false;   // backing store for the wEnergize attribute
+    uint8_t  command_       = CMD_NONE;      // backing store for wCommand
+    uint8_t  commandResult_ = RESULT_NONE;   // backing store for rCommandResult
 };
