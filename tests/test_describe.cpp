@@ -22,6 +22,14 @@ static bool streq(const char* a, const char* b) {
 }
 static bool textIs(const AttrText* t, const char* s) { return attrTextEquals(t, s, strlen(s)); }
 
+static int s_hookCalls = 0;
+static void countHook(const Attr&, void* ctx) { ++*static_cast<int*>(ctx); }
+static AttrNumber readPlusOne(void* ctx) {
+    AttrNumber n = AttrNumber();
+    n.u = *static_cast<uint32_t*>(ctx) + 1;
+    return n;
+}
+
 // Records up to 8 children and 8 attributes, in the order listed.
 class RecordingDescriber final : public IDescriber {
 public:
@@ -106,7 +114,7 @@ int main() {
         RecordingDescriber rec;
         static_cast<IDevice&>(sol).describe(rec);
 
-        check(rec.childCount == 0 && rec.attrCount == 4,                      "no children, four attributes");
+        check(rec.childCount == 0 && rec.attrCount == 3,                      "no children, three attributes");
         const Attr& cnf = rec.attrs[0];
         check(textIs(cnf.name, "cnfMaxOnTimeMs") && cnf.cls == AttrClass::MOUNT, "cnfMaxOnTimeMs is a mount attribute");
         check(cnf.type == AttrType::U32 && textIs(cnf.unit, "ms"),             "type u32 deduced from the member, unit ms");
@@ -126,27 +134,27 @@ int main() {
               "a short buffer is cut, terminated and reported");
         check(w.hasDefault() && w.defaultValue.u == SolenoidDevice::CMD_NONE, "wCommand defaults to None");
 
-        const Attr& res = rec.attrs[2];
-        check(textIs(res.name, "rCommandResult") && res.cls == AttrClass::R && res.enumCount == 5,
-              "rCommandResult is r with the shared result names");
-        const Attr& r = rec.attrs[3];
+        const Attr& r = rec.attrs[2];
+        check(rec.attrCount == 3,                                             "three attributes, no command result");
         check(textIs(r.name, "rEnergized") && r.cls == AttrClass::R && r.type == AttrType::BOOL, "rEnergized is r, bool");
-        check(r.dir == AttrDir::NONE && r.writeHook.fn == nullptr && !r.hasEnum(),
-              "r has no direction, no hook and NO_ENUM");
+        check(r.dir == AttrDir::NONE && r.writeHook.fn == nullptr && !r.hasEnum() && !r.isComputed(),
+              "r has no direction, no hook, NO_ENUM and a real member");
+        check(cnf.writeHook.fn == nullptr,                                    "cnfMaxOnTimeMs has no hook: it is only stored");
 
-        printf("\n-- 3. wCommand runs the command; rCommandResult and r tell the truth --\n");
+        printf("\n-- 3. wCommand is an ordinary w attribute; its hook runs the command --\n");
+        IDevice& dev = sol;                              // the outcome, as rState/rError will show it
         auto command = [&](uint8_t c) {                  // what the framework will do:
             *static_cast<uint8_t*>(w.value) = c;         // store the checked value...
             w.writeHook.fn(w, w.writeHook.ctx);          // ...then call the hook
         };
         command(SolenoidDevice::CMD_ENERGIZE);
-        check(!sol.isEnergized() && *static_cast<uint8_t*>(res.value) == RESULT_REJECTED,
-              "Energize before begin() is Rejected and nothing happens");
+        check(!sol.isEnergized() && dev.getState() == DeviceState::OFFLINE,
+              "Energize before begin() does nothing; the device stays OFFLINE");
 
         sol.begin();
         command(SolenoidDevice::CMD_ENERGIZE);
-        check(sol.isEnergized() && hw.coil && *static_cast<uint8_t*>(res.value) == RESULT_DONE,
-              "Energize after begin() energizes the coil, result Done");
+        check(sol.isEnergized() && hw.coil && dev.getState() == DeviceState::BUSY,
+              "Energize after begin() energizes the coil, state BUSY");
         check(*static_cast<bool*>(r.value),                                   "rEnergized reads true through its Attr");
 
         hw.nowMs = 600;                                // past the 500 ms limit
@@ -155,14 +163,17 @@ int main() {
         check(*static_cast<uint8_t*>(w.value) == SolenoidDevice::CMD_ENERGIZE, "wCommand still holds the last request");
 
         command(SolenoidDevice::CMD_ENERGIZE);
-        check(!sol.isEnergized() && *static_cast<uint8_t*>(res.value) == RESULT_REJECTED,
-              "a second Energize runs again (a write is an event) and is Rejected while faulted");
+        check(!sol.isEnergized() && dev.getState() == DeviceState::ERRORED &&
+              dev.getError() == SolenoidDevice::ERR_ON_TIME_EXCEEDED,
+              "a second Energize runs again (a write is an event) and is refused while ERRORED");
         command(SolenoidDevice::CMD_CLEAR_FAULT);
         command(SolenoidDevice::CMD_ENERGIZE);
-        check(sol.isEnergized() && *static_cast<uint8_t*>(res.value) == RESULT_DONE,
+        check(sol.isEnergized() && dev.getError() == SolenoidDevice::ERR_NONE,
               "ClearFault then Energize works again");
         command(SolenoidDevice::CMD_RELEASE);
-        check(!sol.isEnergized() && *static_cast<uint8_t*>(res.value) == RESULT_DONE, "Release is Done");
+        check(!sol.isEnergized() && dev.getState() == DeviceState::IDLE,      "Release returns it to IDLE");
+        command(SolenoidDevice::CMD_NONE);
+        check(!sol.isEnergized() && dev.getState() == DeviceState::IDLE,      "None runs nothing");
     }
 
     {
@@ -179,7 +190,7 @@ int main() {
 
         RecordingDescriber grandchild;
         rec.children[0]->describe(grandchild);
-        check(grandchild.attrCount == 4,                                    "walking into a child reaches its attributes");
+        check(grandchild.attrCount == 3,                                    "walking into a child reaches its attributes");
 
         const Attr& in = rec.attrs[0];
         const Attr& out = rec.attrs[1];
@@ -219,6 +230,32 @@ int main() {
         check(!attrTextField(list, 3, field, sizeof(field)),                      "past the end there is none");
         check(attrTextEquals(UDI_TEXT("wCmd"), "wCmdX", 4) && !attrTextEquals(UDI_TEXT("wCmd"), "wCm", 3),
               "attrTextEquals() matches whole text only");
+    }
+
+    {
+        printf("\n-- 6. any class may carry a hook; r may be computed --\n");
+        uint32_t gearRatio = 0, gain = 0, plain = 0;
+        Attr mount = attrMount(UDI_TEXT("cnfGear"), gearRatio).onWrite(countHook, &s_hookCalls);
+        Attr setup = attrSetup(UDI_TEXT("cnfGain"), gain).onWrite(countHook, &s_hookCalls);
+        Attr store = attrSetup(UDI_TEXT("cnfPlain"), plain);
+        check(mount.writeHook.fn == countHook && mount.writeHook.ctx == &s_hookCalls, "a mount attribute keeps its hook");
+        check(setup.writeHook.fn == countHook,                                       "a setup attribute keeps its hook");
+        check(store.writeHook.fn == nullptr && store.value == &plain,                "a setup attribute without one just stores");
+        mount.writeHook.fn(mount, mount.writeHook.ctx);
+        setup.writeHook.fn(setup, setup.writeHook.ctx);
+        check(s_hookCalls == 2,                                                       "both hooks run with their context");
+
+        uint32_t source = 41;
+        Attr c = attrRComputed(UDI_TEXT("rAnswer"), AttrType::U32, readPlusOne, &source, UDI_TEXT("n"));
+        check(c.cls == AttrClass::R && c.type == AttrType::U32 && c.dir == AttrDir::NONE, "a computed attribute is r, of the given type");
+        check(c.value == nullptr && c.isComputed() && textIs(c.unit, "n"),           "it has no member, only a source");
+        check(c.readFn.fn(c.readFn.ctx).u == 42,                                     "its source computes the value on each read");
+        source = 99;
+        check(c.readFn.fn(c.readFn.ctx).u == 100,                                    "so it is never stale");
+        check(c.writeHook.fn == nullptr && !c.hasEnum() && !c.hasMin(),              "no hook, enum or limits unless chained");
+        Attr st = attrRComputed(UDI_TEXT("rState"), AttrType::U8, readPlusOne, &source)
+                      .enumOf(UDI_TEXT("Offline|Idle|Busy|Errored"));
+        check(st.enumCount == 4 && st.isComputed(),                                  "chained setters work on a computed attribute");
     }
 
     printf("\n%d passed, %d failed\n", s_passed, s_failed);

@@ -9,7 +9,7 @@ IDescriber	KEYWORD1
 Attr	KEYWORD1
 AttrNumber	KEYWORD1
 AttrText	KEYWORD1
-CommandResult	KEYWORD1
+AttrReadFn	KEYWORD1
 AttrClass	KEYWORD1
 AttrDir	KEYWORD1
 AttrType	KEYWORD1
@@ -29,7 +29,8 @@ def	KEYWORD2
 enumOf	KEYWORD2
 onWrite	KEYWORD2
 enumName	KEYWORD2
-commandResultNames	KEYWORD2
+attrRComputed	KEYWORD2
+isComputed	KEYWORD2
 attrW	KEYWORD2
 attrR	KEYWORD2
 attrIn	KEYWORD2
