@@ -77,9 +77,12 @@ This library depends on nothing. Everything else depends on it.
   default and, optionally, an enumeration of named choices. Nothing is stored; [Universal-Device-Framework](https://github.com/vishwam-aggarwal/Universal-Device-Framework)
   builds its device tree on it. Defaults to listing nothing, so existing devices are
   unchanged.
-- `DeviceCommand.h` — the standard way to command a device: one `wCommand` attribute whose
-  enumeration lists the device's verbs, and an `rCommandResult` (None / Running / Done /
-  Rejected / Failed) that says what happened.
+- **Every attribute works the same way.** Any attribute may carry an optional write hook
+  (`.onWrite()`), which the framework runs after every accepted write: a `cnf` without one
+  just stores its value, a `cnf` with one can also change what depends on it, a `w` with
+  one turns the write into an action. No name is special. An `r` value may be computed
+  instead of held in a member (`attrRComputed()`); the framework uses that to list
+  `rState`, `rStatus` and `rError` for every device, so those names are reserved.
 - `DeviceState` — one real, shared `enum class` (`OFFLINE` / `IDLE` / `BUSY` / `ERRORED`)
   so generic code can hold a mixed list of `IDevice*` and branch on state without knowing
   the concrete type.
@@ -224,8 +227,12 @@ directly.
    `.def()`, `.enumOf(UDI_TEXT("None|Energize|..."))`, `.onWrite()`. Every name, unit and
    enumeration is written `UDI_TEXT("...")`, which keeps it in flash on AVR instead of RAM;
    an enumeration's values are the positions of its names. Names carry their class as a prefix (`cnf`, `w`,
-   `r`, `io`) and never contain `/` or `.`. Take commands through one `wCommand`
-   (`DeviceCommand.h`), as `SolenoidDevice` does.
+   `r`, `io`) and never contain `/` or `.`. Any attribute may run a hook when it is
+   written (`.onWrite(fn, ctx)`): a `w` that triggers an action, a `cnf` that recomputes
+   something derived from it, or none at all for a value that is only stored. A device
+   with several verbs can take them through one enumerated `w` (`SolenoidDevice`'s
+   `wCommand`), through one `w` per action, or both. Don't declare `rState`, `rStatus` or
+   `rError`: the framework lists them for you.
    Override `end()` if the device must leave hardware safe on teardown.
 
 ---
@@ -405,10 +412,11 @@ run `.vscode/build-debug.bat`, which configures with NMake from a VS developer s
   latched), the protective cutoff (latched, reported once, coil forced off), recovery,
   `millis()` wrap-around, and operation with no sink installed.
 - `tests/test_describe.cpp` walks `describe()` with a recording describer: the defaults
-  list nothing, `SolenoidDevice`'s four attributes point at its own members with their
-  ranges, defaults and enumerations, `wCommand` runs each command and `rCommandResult`
-  reports it, a parent lists its children and `io` attributes, `end()` dispatches, and
-  types and limits are deduced and stored exactly.
+  list nothing, `SolenoidDevice`'s three attributes point at its own members with their
+  ranges, defaults and enumerations, `wCommand`'s hook runs each command with the outcome
+  visible in the device's state and error, a parent lists its children and `io`
+  attributes, `end()` dispatches, types and limits are deduced and stored exactly, mount
+  and setup attributes carry hooks (or none), and a computed `r` attribute reads live.
 
 **On hardware**: `arduino-cli compile --fqbn arduino:renesas_uno:unor4wifi -u -p <port>
 examples/SolenoidDeviceDemo`, then open a 115200-baud monitor. The UNO R4 WiFi's native USB

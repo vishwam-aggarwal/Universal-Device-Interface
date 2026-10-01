@@ -104,11 +104,19 @@ Chained `.range(lo, hi)` (either may be `NO_MIN`/`NO_MAX`), `.def(v)`, `.enumOf(
 those as macros. CHECKING AND APPLYING WRITES IS THE FRAMEWORK'S JOB, NOT THIS LIBRARY'S:
 UDF refuses out-of-range and non-enum values (never clamps).
 
-**`src/DeviceCommand.h`** — the one way to command a device: a u8 `wCommand` whose
-enumeration lists the device's verbs (0 = None), run by its write hook; a write is an
-event, not a level; arguments are w attributes written first (CiA 402 pattern); outcome in
-`rCommandResult` (`RESULT_NONE/RUNNING/DONE/REJECTED/FAILED`, names from
-`commandResultNames()`). The device's C++ methods stay and the hook calls them.
+**Every attribute works the same way** (decided 2026-10-01, replacing the v0.4
+`DeviceCommand.h` convention, which was deleted along with `CommandResult` and
+`rCommandResult`). Any attribute of any class may carry an optional write hook; the
+framework runs it after every accepted write, even an unchanged value (a write is an
+event, not a level). A `cnf` with no hook just stores; a `cnf` with one may recompute
+dependents (a mount hook runs before `begin()`, so no hardware); a `w` with one acts.
+Arguments are attributes written first (CiA 402 pattern). No name is special: a device
+may use one enumerated `wCommand`, several `w` attributes, or both. Outcomes show in
+`rState`/`rStatus`/`rError`, which UDF lists for every device (reserved names), plus any
+`r` the device adds. Those three are computed attributes: `AttrReadFn {fn, ctx}` on
+`Attr`, made with `attrRComputed(name, type, fn, ctx)`, `value == nullptr`; only `r` can
+be computed. **UDF has not adopted this yet** (deferred by decision): its `attrLoad()`
+must call `readFn` and `DeviceTree` must list the three; until then UDF pins UDI v0.4.
 
 **`src/IDescriber.h`** — the visitor `describe()` calls: `child(name, device)` and
 `attr(attr)`. Protected non-virtual destructor (never deleted through the interface; keeps
@@ -135,9 +143,9 @@ legal 1 s pulse, then a deliberately-forgotten `release()` so the 2 s cutoff fir
 `clearFault()`, repeat.
 
 `SolenoidDevice::describe()` lists `cnfMaxOnTimeMs` (mount, 1 .. NO_MAX, no default),
-`wCommand` (None / Energize / Release / ClearFault), `rCommandResult` and `rEnergized`. A `w`
-attribute holds the last request; the `r` attribute is the truth (a cutoff releases the
-coil without touching `wCommand`).
+`wCommand` (None / Energize / Release / ClearFault, an ordinary `w` whose hook calls the
+methods) and `rEnergized`. A `w` attribute holds the last request; the `r` attribute is the
+truth (a cutoff releases the coil without touching `wCommand`).
 
 **`tests/test_device_sink.cpp`** — two deliberately non-motion test doubles defined in the
 test itself (`MockSolenoid`: has a real busy concept; `MockCurrentSensor`: pure sensor,
@@ -151,8 +159,9 @@ limit, the cutoff (sticky, reported once, coil off, `energize()` refused silentl
 
 **`tests/test_describe.cpp`** — `describe()`, `Attr` and `end()` through a recording
 describer: defaults, the solenoid's attributes with ranges, defaults and enums, every
-command through `wCommand` and its result, a parent with two children and `io` in both
-directions, type deduction and exact limits.
+command through `wCommand` with the outcome read from state/error, a parent with two
+children and `io` in both directions, type deduction and exact limits, hooks on mount and
+setup attributes (and a setup with none), and a computed `r` attribute (58 checks).
 
 ### Three-tier State / Status / Error — the core design decision
 

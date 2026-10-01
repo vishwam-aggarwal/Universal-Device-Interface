@@ -1,7 +1,6 @@
 #pragma once
 
 #include <stdint.h>
-#include "DeviceCommand.h"
 #include "IDevice.h"
 
 // ==================================================================
@@ -147,7 +146,8 @@ public:
     // ------------------------------------------------------------
     // Device tree
     // ------------------------------------------------------------
-    // Commands, as wCommand values. 0 is always None (DeviceCommand.h).
+    // Commands, as wCommand values. 0 is None, so a default write does
+    // nothing.
     enum Command : uint8_t {
         CMD_NONE        = 0,
         CMD_ENERGIZE    = 1,
@@ -155,10 +155,13 @@ public:
         CMD_CLEAR_FAULT = 3,
     };
 
-    // cnfMaxOnTimeMs is a MOUNT attribute with no default: it is the
-    // coil's rating, so it must be given at boot and never changes while
-    // running. wCommand runs energize()/release()/clearFault() through
-    // its write hook; rCommandResult says whether it was accepted.
+    // cnfMaxOnTimeMs is a MOUNT attribute with no default and no hook: it
+    // is the coil's rating, so it must be given at boot, never changes
+    // while running, and is only stored. wCommand is an ordinary w
+    // attribute whose write hook runs energize()/release()/clearFault().
+    // The outcome shows the way every outcome does: rEnergized here, and
+    // rState/rError, which the framework lists for every device (a
+    // refused energize() reports its error through the sink as usual).
     // wCommand keeps the last command written, which is not always what
     // happened (the cutoff releases the coil on its own). THE TRUTH IS
     // rEnergized: a w attribute is a request, an r attribute is the state.
@@ -168,7 +171,6 @@ public:
         d.attr(attrW(UDI_TEXT("wCommand"), command_)
                    .enumOf(UDI_TEXT("None|Energize|Release|ClearFault")).def(CMD_NONE)
                    .onWrite(onCommandWritten, this));
-        d.attr(attrR(UDI_TEXT("rCommandResult"), commandResult_).enumOf(commandResultNames()));
         d.attr(attrR(UDI_TEXT("rEnergized"), energized_));
     }
 
@@ -189,18 +191,16 @@ private:
     static uint32_t elapsedMs(uint32_t now, uint32_t since) { return now - since; }
 
 
-    // release() cannot be refused (releasing an idle coil is a no-op),
-    // so only energize() and clearFault() can come back REJECTED.
+    // Runs the command just written. A refusal needs no return path: it
+    // is visible in rState/rError, and energize() reports before begin().
     static void onCommandWritten(const Attr&, void* ctx) {
         SolenoidDevice* self = static_cast<SolenoidDevice*>(ctx);
-        bool ok = true;
         switch (self->command_) {
-            case CMD_ENERGIZE:    ok = self->energize();   break;
-            case CMD_RELEASE:     self->release();         break;
-            case CMD_CLEAR_FAULT: ok = self->clearFault(); break;
-            default:              return;                  // None: nothing to run
+            case CMD_ENERGIZE:    self->energize();   break;
+            case CMD_RELEASE:     self->release();    break;
+            case CMD_CLEAR_FAULT: self->clearFault(); break;
+            default:              break;              // None: nothing to run
         }
-        self->commandResult_ = ok ? RESULT_DONE : RESULT_REJECTED;
     }
 
     const char*  name_;
@@ -212,5 +212,4 @@ private:
     uint32_t energizedAtMs_ = 0;
     uint32_t error_         = ERR_NONE;
     uint8_t  command_       = CMD_NONE;      // backing store for wCommand
-    uint8_t  commandResult_ = RESULT_NONE;   // backing store for rCommandResult
 };
