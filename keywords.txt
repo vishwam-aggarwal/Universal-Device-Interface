@@ -7,6 +7,7 @@ GlobalErrorSink	KEYWORD1
 SolenoidDevice	KEYWORD1
 UdiTime	KEYWORD1
 UdiClockWidener	KEYWORD1
+UdiWallClock	KEYWORD1
 IDescriber	KEYWORD1
 Attr	KEYWORD1
 AttrNumber	KEYWORD1
@@ -62,6 +63,11 @@ release	KEYWORD2
 clearFault	KEYWORD2
 getEnergizedAtUs	KEYWORD2
 advance	KEYWORD2
+sync	KEYWORD2
+stampUs	KEYWORD2
+lastStepUs	KEYWORD2
+formatUtc	KEYWORD2
+formatSinceBoot	KEYWORD2
 GetString	KEYWORD2
 GetText	KEYWORD2
 GetCapacity	KEYWORD2

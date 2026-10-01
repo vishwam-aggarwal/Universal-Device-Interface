@@ -155,6 +155,18 @@ attributes.** Decisions, all the user's:
   `GetString()`, `GetText()`, `UpdateValue(const char*)` (cut to capacity); numbers and text
   ignore each other. Absent flash text fields are `nullptr`, never a plain `""` (on AVR a
   plain literal is in RAM but would be read as flash).
+- **Wall clock (`src/UdiWallClock.h`), decided 2026-10-01:** calendar time is an offset on
+  top of `UdiTime` (`sync(epochUs, t)`, `stampUs(t)`, `lastStepUs()`, `format(t)` →
+  `YYYY-MM-DD HH:MM:SS.uuuuuu` UTC or `+s.uuuuuu s` before a sync; civil-from-days, no
+  `<time.h>`). **Not a device, by the user's decision:** the application reads its RTC /
+  system clock and owns the error sink, so how anything is stamped or printed is the
+  user's choice; the sink signature is unchanged. `examples/WallClockDemo` (R4 only, core
+  `RTC` library) shows it with the solenoid. **Nano R4 measurements (COM15, core 1.6.0):**
+  the core's RTC defaults to LOCO (`libraries/RTC/src/RTC.cpp:445`) — ~0.95 % fast;
+  `-DRTC_CLOCK_SOURCE=RTC_CLOCK_SOURCE_SUBCLK` (variant claims
+  `BSP_CLOCK_CFG_SUBCLOCK_POPULATED 1`) ran ~2.7x fast — unusable; `micros()` within serial
+  jitter of the PC over 3 min (≤ ~50 ppm). Hence sync once (boot / when set) and let
+  `micros()` carry it. The RTC survives a reset; power loss untested (no VBAT pin defined).
 - Not built: a `service()` background hook — add only when a device needs slow non-real-
   time work.
 
@@ -172,7 +184,7 @@ through `Set_wCommand`, then one scan. Uno: 9196 B flash / 372 B RAM (v0.6: 7586
 
 **Tests** — `test_device_sink.cpp` (37), `test_solenoid_device.cpp` (40: config, refusal,
 latch-then-act, last wins, cutoff in µs, fault between latch and scan, a run across 2^32
-µs), `test_describe.cpp` (87: generated records, enums, callbacks, mount without callback,
+µs), `test_wallclock.cpp` (17), `test_describe.cpp` (87: generated records, enums, callbacks, mount without callback,
 text attributes, `update(t)` through a parent), `test_time.cpp` (7), and
 `tests/compile_fail/` (8: w/`_CB`/text w without `Set_`, `UDI_MOUNT_CB`, prefix, enum
 name, type, `rState`). **Locally with NMake, run `ctest` from a VS developer shell.**
@@ -191,6 +203,9 @@ name, type, `rState`). **Locally with NMake, run `ctest` from a VS developer she
   `WRITES_IMMEDIATE` (OS; caller's thread, tree lock, accept/refuse returned at once).
 - **Scan**: `ITickSource` → `UdiTime`; Runtime period = links in → `update(t)` → links out;
   links are M6.
+- **Wall clock on an OS**: sync a `UdiWallClock` from `CLOCK_REALTIME` at start and when
+  NTP steps the clock; stamp console/log lines with it (the scan's `UdiTime` stays
+  monotonic from `CLOCK_MONOTONIC`).
 - **Record changes**: `Attr.value` is `AttrNumber*`; the write path calls the hook INSTEAD
   of storing (new "refused by device" result); enums are `AttrEnum` tables (ITEM,
   TreePrinter, ValueText); `AttrType::STR` over the protocol (capacity, text values);

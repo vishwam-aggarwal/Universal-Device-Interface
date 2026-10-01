@@ -30,6 +30,10 @@ add_executable(test_time tests/test_time.cpp)
 target_link_libraries(test_time PRIVATE device)
 add_test(NAME time COMMAND test_time)
 
+add_executable(test_wallclock tests/test_wallclock.cpp)
+target_link_libraries(test_wallclock PRIVATE device)
+add_test(NAME wallclock COMMAND test_wallclock)
+
 # Compile-time rules. Each source here must NOT compile; the test builds
 # its target and passes only when the compiler's message names the rule
 # that was broken.

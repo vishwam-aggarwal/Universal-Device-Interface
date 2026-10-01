@@ -90,6 +90,10 @@ This library depends on nothing. Everything else depends on it.
 - **Time is the scan's.** `update(const UdiTime& t)` gets one 64-bit microsecond time per
   period (`t.us`, `t.dtUs`, `t.cycle`); devices never read a clock, and nothing wraps.
   `UdiClockWidener` turns a wrapping counter such as `micros()` into it.
+- **Timestamps: `UdiWallClock`.** Calendar time as an offset on top of `UdiTime`: sync it
+  from an RTC or the system clock, then stamp any scan with microsecond resolution
+  (`2026-10-01 14:03:22.123456`, UTC). Reading the clock source and printing are the
+  application's business — see `examples/WallClockDemo` (R4 boards).
 - **Mount means boot, setup means live.** A mount cnf is read once, before `begin()`,
   and changes only on the next start (on a microcontroller the firmware is the
   configuration; on an OS the framework keeps it in a config file). A setup cnf takes
@@ -352,6 +356,32 @@ cnf writes immediately from another thread (the writer gets accept/refuse at onc
 io stays in the scan; it guarantees that no callback runs at the same time as any
 `update` of its device tree, so devices contain no locks.
 
+### Timestamps: wall clock on top of the scan
+
+`UdiTime` is monotonic and never jumps — what durations need. A timestamp needs the date
+and time of day, from an RTC or the OS clock, and that clock *can* jump (it is set, NTP
+corrects it), so it never feeds `UdiTime`. `UdiWallClock` keeps an offset instead:
+
+```cpp
+wall.sync(rtcUnixSeconds * 1000000LL, t);   // at boot / when set, at the RTC's second tick
+char s[UdiWallClock::FORMAT_SIZE];
+wall.format(t, s, sizeof(s));               // "2026-10-01 14:03:22.123456", or "+12.345678 s" before a sync
+```
+
+A stamp is one addition, has microsecond resolution and sits on the same timeline as the
+scan that produced it. `lastStepUs()` reports how far each resync moved the clock — the
+drift between the two clocks. No hardware, no globals: the application reads its clock
+source, owns the instance, and decides what gets stamped and how it is printed (the error
+sink included).
+
+**Measured on an Arduino Nano R4 (2026-10-01, core 1.6.0):** the on-chip RTC runs on the
+internal LOCO oscillator by default and was **~0.95 % fast** (~9,400 ppm, about 13 min a
+day). Built with `-DRTC_CLOCK_SOURCE=RTC_CLOCK_SOURCE_SUBCLK` it counted **~2.7 seconds per
+second** — unusable on that board. `micros()` tracked the PC clock to within serial jitter
+over 3 minutes (≤ ~50 ppm). So `WallClockDemo` syncs from the RTC only at boot and when
+the time is set, and lets `micros()` carry it (`RESYNC_EVERY_S = 0`); with a good RTC
+(a DS3231) resync periodically instead. The RTC kept its time across a reset.
+
 ### Configuration: mount and setup
 
 - **mount** — read once, before `begin()`; never changes while running; no callback. On a
@@ -467,6 +497,9 @@ run `.vscode/build-debug.bat`, which configures with NMake from a VS developer s
   last request wins, the protective cutoff in µs (latched, reported once, `ioCoil` off),
   recovery, a run across 2^32 µs.
 - `tests/test_time.cpp` — `UdiClockWidener`: first sample, the 32-bit wrap, many wraps.
+- `tests/test_wallclock.cpp` — `UdiWallClock`: since-boot before a sync, stamps after it,
+  resync steps, UTC formatting (epoch, before it, a leap day, past 2038, year 9999, short
+  buffers).
 - `tests/test_describe.cpp` — what the declarations generate: `rState` on every device, the
   records in declaration order with types, units, limits, defaults and enumerations (gaps
   and negatives), callbacks accepting and refusing, `_CB` vs plain cnf, text attributes,
