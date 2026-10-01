@@ -3,10 +3,10 @@
 #include "SolenoidDevice.h"
 
 // ==================================================================
-// Desktop test for SolenoidDevice, the sample IDevice implementation.
-// The same class runs on Arduino against digitalWrite()/millis()
-// (examples/SolenoidDeviceDemo); here it runs against a fake port with
-// a hand-advanced clock so the protective cutoff is deterministic.
+// Desktop test for SolenoidDevice, the sample device. It is pure logic:
+// no port, no clock. The test hands update() the times it wants and
+// reads the coil drive from ioCoil -- the same class runs unchanged on
+// Arduino behind DemoIoServer (examples/SolenoidDeviceDemo).
 // ==================================================================
 
 static int s_passed = 0, s_failed = 0;
@@ -20,174 +20,180 @@ static bool streq(const char* a, const char* b) {
     return a != nullptr && b != nullptr && strcmp(a, b) == 0;
 }
 
-// ------------------------------------------------------------------
-// Fake hardware port: records every coil write, serves a settable clock.
-// ------------------------------------------------------------------
-struct FakePort {
-    bool     coil       = false;
-    int      writes     = 0;
-    uint32_t nowMs      = 0;
+// A period at time `ms` (microsecond resolution available through `us`).
+static UdiTime at(uint64_t us, uint32_t cycle = 0) {
+    UdiTime t;
+    t.us = us; t.dtUs = 0; t.cycle = cycle;
+    return t;
+}
+static UdiTime atMs(uint64_t ms) { return at(ms * 1000u); }
+
+// A configured solenoid, as the framework would leave it before begin().
+struct Rig {
+    SolenoidDevice sol;
+    explicit Rig(uint32_t maxOnMs = 500) { sol.cnfMaxOnTimeMs.UpdateValue(maxOnMs); }
 };
 
-static void fakeWriteCoil(bool energized, void* ctx) {
-    FakePort* p = static_cast<FakePort*>(ctx);
-    p->coil = energized;
-    ++p->writes;
+// A write from outside, the way the framework does it: rules already
+// passed, then the attribute's callback with the incoming value.
+static bool writeCommand(SolenoidDevice& s, uint8_t c) {
+    Attr a = s.wCommand.Describe(&s);
+    AttrNumber v = AttrNumber::ofU(c);
+    return a.writeHook.fn(a, v, a.writeHook.ctx);
 }
-static uint32_t fakeNowMs(void* ctx) { return static_cast<FakePort*>(ctx)->nowMs; }
 
-static SolenoidPort portFor(FakePort& p) {
-    SolenoidPort port = { fakeWriteCoil, fakeNowMs, &p };
-    return port;
+static const char* text(const UdiAttr& a) {
+    static char buf[48];
+    a.GetValueName(buf, sizeof(buf));
+    return buf;
 }
 
 // ------------------------------------------------------------------
 // Capturing sink
 // ------------------------------------------------------------------
 struct SinkCapture {
-    int         calls       = 0;
-    const char* layer       = nullptr;
-    const char* sourceName  = nullptr;
-    uint32_t    errorCode   = 0;
-    const char* errorString = nullptr;
+    int            calls           = 0;
+    const char*    typeName        = nullptr;
+    const IDevice* source          = nullptr;
+    uint32_t       errorCode       = 0;
+    char           errorString[48] = {};   // a copy: the text is valid only during the call
 };
 
-static void captureSink(const char* layer, const char* sourceName, uint32_t errorCode,
+static void captureSink(const char* typeName, const IDevice* source, uint32_t errorCode,
                         const char* errorString, void* userContext) {
     SinkCapture* cap = static_cast<SinkCapture*>(userContext);
     ++cap->calls;
-    cap->layer       = layer;
-    cap->sourceName  = sourceName;
-    cap->errorCode   = errorCode;
-    cap->errorString = errorString;
+    cap->typeName  = typeName;
+    cap->source    = source;
+    cap->errorCode = errorCode;
+    snprintf(cap->errorString, sizeof(cap->errorString), "%s", errorString);
 }
 
 int main() {
     printf("=== SolenoidDevice ===\n\n");
 
     {
-        printf("-- 1. before begin(): OFFLINE, commands rejected + reported, not latched --\n");
-        FakePort hw; SinkCapture cap;
+        printf("-- 1. mount configuration: begin() refuses without it --\n");
+        SolenoidDevice sol;
+        check(sol.rState.Get() == ST_OFFLINE && !sol.ioCoil.Get(),       "OFFLINE, coil off after construction");
+        check(sol.cnfMaxOnTimeMs.Get() == 0 && !sol.cnfMaxOnTimeMs.HasDefault(), "cnfMaxOnTimeMs has no default");
+        check(!sol.begin() && sol.rState.Get() == ST_OFFLINE,             "begin() without cnfMaxOnTimeMs fails, stays OFFLINE");
+        sol.cnfMaxOnTimeMs.UpdateValue(500);
+        check(sol.begin() && sol.rState.Get() == ST_IDLE,                 "configured: begin() -> IDLE");
+    }
+
+    {
+        printf("\n-- 2. before begin(): commands refused + reported, not latched --\n");
+        SinkCapture cap;
         IDevice::setGlobalErrorSink(captureSink, &cap);
-        SolenoidDevice sol("Latch", portFor(hw), 500);
+        Rig r;
 
-        check(sol.getState() == DeviceState::OFFLINE && !sol.isOnline(), "OFFLINE / !isOnline() after construction");
-        check(hw.writes == 0,                                             "constructor touches no hardware");
-
-        check(!sol.energize(),                                            "energize() rejected while OFFLINE");
+        check(!writeCommand(r.sol, SolenoidDevice::CMD_ENERGIZE),         "Energize refused while OFFLINE");
         check(cap.calls == 1 && cap.errorCode == SolenoidDevice::ERR_NOT_ONLINE, "ERR_NOT_ONLINE reported through the sink");
-        check(streq(cap.layer, "Solenoid") && streq(cap.sourceName, "Latch"),  "tagged layer=Solenoid, sourceName=constructor name");
-        check(streq(cap.errorString, sol.getErrorString(SolenoidDevice::ERR_NOT_ONLINE)), "errorString matches getErrorString()");
-        check(sol.getError() == SolenoidDevice::ERR_NONE,                 "non-sticky: getError() still ERR_NONE");
-        check(sol.getState() == DeviceState::OFFLINE,                     "non-sticky: state still OFFLINE, not ERRORED");
-        check(hw.coil == false && hw.writes == 0,                         "coil untouched by the rejected command");
-        check(!sol.clearFault(),                                          "clearFault() refused while OFFLINE");
+        check(streq(cap.typeName, "Solenoid") && cap.source == &r.sol,    "typeName from UDI_DEVICE, source is the device");
+        check(streq(cap.errorString, "Command rejected: begin() not called"), "errorString is the description from rError's enum");
+        check(r.sol.rError.Get() == SolenoidDevice::ERR_NONE && r.sol.rState.Get() == ST_OFFLINE,
+              "non-sticky: rError and rState untouched");
+        check(r.sol.wCommand.Get() == SolenoidDevice::CMD_NONE,           "a refused write is not stored");
+        r.sol.update(atMs(10));
+        check(!r.sol.ioCoil.Get(),                                        "and nothing happens in the next scan");
+        check(!writeCommand(r.sol, SolenoidDevice::CMD_CLEAR_FAULT),      "ClearFault refused while OFFLINE");
+        check(writeCommand(r.sol, SolenoidDevice::CMD_RELEASE),           "Release is always accepted");
     }
 
     {
-        printf("\n-- 2. begin() -> IDLE, coil driven to a known-safe state --\n");
-        FakePort hw; SinkCapture cap;
-        IDevice::setGlobalErrorSink(captureSink, &cap);
-        SolenoidDevice sol("Latch", portFor(hw), 500);
+        printf("\n-- 3. Set_ latches, update(t) acts --\n");
+        IDevice::setGlobalErrorSink(nullptr);
+        Rig r;
+        r.sol.begin();
 
-        check(sol.begin(),                                                "begin() returns true");
-        check(sol.isOnline() && sol.getState() == DeviceState::IDLE,      "IDLE / isOnline() after begin()");
-        check(hw.writes == 1 && hw.coil == false,                         "begin() writes the coil OFF once");
-        check(sol.getStatus() == SolenoidDevice::STATUS_NONE,             "status STATUS_NONE");
-        check(streq(sol.getStatusString(sol.getStatus()), "None"),        "getStatusString(STATUS_NONE) == \"None\"");
-        check(sol.getError() == 0 && streq(sol.getErrorString(0), "No error"), "error 0 / \"No error\"");
-        check(sol.getOnTimeMs() == 0,                                     "on-time is 0 when not energized");
-        check(cap.calls == 0,                                             "nothing reported during a clean begin()");
-    }
+        check(writeCommand(r.sol, SolenoidDevice::CMD_ENERGIZE),          "Energize accepted while IDLE");
+        check(r.sol.wCommand.Get() == SolenoidDevice::CMD_ENERGIZE,       "the request is stored");
+        check(!r.sol.ioCoil.Get() && r.sol.rState.Get() == ST_IDLE,       "but nothing moves until the scan");
+        r.sol.update(atMs(1000));
+        check(r.sol.ioCoil.Get() && r.sol.rEnergized.Get() && r.sol.rState.Get() == ST_BUSY,
+              "update(t) drives ioCoil, rEnergized, BUSY");
+        check(r.sol.getEnergizedAtUs() == 1000000u,                       "the time comes from the scan");
 
-    {
-        printf("\n-- 3. energize / release within the limit: BUSY, no fault --\n");
-        FakePort hw; SinkCapture cap;
-        IDevice::setGlobalErrorSink(captureSink, &cap);
-        SolenoidDevice sol("Latch", portFor(hw), 500);
-        sol.begin();
+        check(writeCommand(r.sol, SolenoidDevice::CMD_RELEASE) &&
+              writeCommand(r.sol, SolenoidDevice::CMD_ENERGIZE),          "two requests in one period");
+        r.sol.update(atMs(1100));
+        check(r.sol.ioCoil.Get() && r.sol.getEnergizedAtUs() == 1000000u, "the last one wins (still energized, timer untouched)");
 
-        hw.nowMs = 1000;
-        check(sol.energize(),                                             "energize() accepted while IDLE");
-        check(hw.coil == true,                                            "coil driven ON");
-        check(sol.getState() == DeviceState::BUSY,                        "state BUSY while energized");
-        check(sol.getStatus() == SolenoidDevice::STATUS_ENERGIZED,        "status STATUS_ENERGIZED");
-        check(streq(sol.getStatusString(sol.getStatus()), "Energized"),   "getStatusString == \"Energized\"");
-        check(sol.isEnergized(),                                          "isEnergized()");
-
-        int writesBefore = hw.writes;
-        check(sol.energize() && hw.writes == writesBefore,                "energize() again is idempotent (no extra write)");
-
-        hw.nowMs = 1300; sol.update();
-        check(sol.getOnTimeMs() == 300,                                   "getOnTimeMs() tracks the clock");
-        check(sol.getState() == DeviceState::BUSY && cap.calls == 0,      "still BUSY under the limit, nothing reported");
-
-        hw.nowMs = 1499; sol.update();
-        check(sol.getState() == DeviceState::BUSY,                        "BUSY at limit-1ms");
-
-        sol.release();
-        check(hw.coil == false && !sol.isEnergized(),                     "release() drives the coil OFF");
-        check(sol.getState() == DeviceState::IDLE,                        "IDLE after release()");
-        check(sol.getOnTimeMs() == 0,                                     "on-time back to 0");
-
-        hw.nowMs = 5000; sol.update();
-        check(sol.getState() == DeviceState::IDLE && cap.calls == 0,      "update() after release never trips the cutoff");
+        writeCommand(r.sol, SolenoidDevice::CMD_RELEASE);
+        r.sol.update(atMs(1200));
+        check(!r.sol.ioCoil.Get() && r.sol.rState.Get() == ST_IDLE,       "Release: coil off, IDLE");
+        r.sol.update(atMs(5000));
+        check(r.sol.rState.Get() == ST_IDLE,                              "scans after a release never trip the cutoff");
     }
 
     {
         printf("\n-- 4. protective cutoff: sticky ERRORED, coil forced off, reported once --\n");
-        FakePort hw; SinkCapture cap;
+        SinkCapture cap;
         IDevice::setGlobalErrorSink(captureSink, &cap);
-        SolenoidDevice sol("Latch", portFor(hw), 500);
-        sol.begin();
+        Rig r;
+        r.sol.begin();
 
-        hw.nowMs = 100; sol.energize();
-        hw.nowMs = 600; sol.update();                       // exactly maxOnTimeMs elapsed
-        check(hw.coil == false,                                           "coil forced OFF at the limit");
-        check(sol.getState() == DeviceState::ERRORED,                     "state ERRORED");
-        check(sol.getError() == SolenoidDevice::ERR_ON_TIME_EXCEEDED,     "getError() == ERR_ON_TIME_EXCEEDED");
-        check(sol.getStatus() == SolenoidDevice::STATUS_NONE,             "status drops to STATUS_NONE (coil is off)");
-        check(sol.isOnline(),                                             "ERRORED is still online");
+        r.sol.energize();
+        r.sol.update(atMs(100));
+        r.sol.update(at(599999));
+        check(r.sol.rState.Get() == ST_BUSY && cap.calls == 0,            "BUSY 1 us before the limit");
+        r.sol.update(atMs(600));                           // exactly cnfMaxOnTimeMs on
+        check(!r.sol.ioCoil.Get() && !r.sol.rEnergized.Get(),             "coil forced OFF at the limit");
+        check(r.sol.rState.Get() == ST_ERRORED,                           "state ERRORED");
+        check(r.sol.rError.Get() == SolenoidDevice::ERR_ON_TIME_EXCEEDED, "rError == ERR_ON_TIME_EXCEEDED");
         check(cap.calls == 1 && cap.errorCode == SolenoidDevice::ERR_ON_TIME_EXCEEDED, "fault reported exactly once");
-        check(streq(cap.errorString, sol.getErrorString(sol.getError())), "sink string == getErrorString(getError())");
+        check(streq(cap.errorString, text(r.sol.rError)),                 "sink text == rError's description");
 
-        hw.nowMs = 900; sol.update();
-        check(cap.calls == 1,                                             "update() while ERRORED does not re-report");
-        check(!sol.energize() && cap.calls == 1 && hw.coil == false,      "energize() refused while ERRORED, silently (already reported)");
+        r.sol.update(atMs(900));
+        check(cap.calls == 1,                                             "scans while ERRORED do not re-report");
+        check(!writeCommand(r.sol, SolenoidDevice::CMD_ENERGIZE) && cap.calls == 1, "Energize refused while ERRORED, silently");
 
-        check(sol.clearFault(),                                           "clearFault() accepted");
-        check(sol.getState() == DeviceState::IDLE && sol.getError() == 0, "IDLE / ERR_NONE after clearFault()");
-        hw.nowMs = 1000;
-        check(sol.energize() && sol.getState() == DeviceState::BUSY,      "usable again after recovery");
+        check(writeCommand(r.sol, SolenoidDevice::CMD_CLEAR_FAULT),       "ClearFault accepted");
+        check(r.sol.rState.Get() == ST_ERRORED,                           "latched until the scan");
+        r.sol.update(atMs(950));
+        check(r.sol.rState.Get() == ST_IDLE && r.sol.rError.Get() == 0,   "IDLE / ERR_NONE after the scan");
+        r.sol.energize();
+        r.sol.update(atMs(1000));
+        check(r.sol.rState.Get() == ST_BUSY,                              "usable again after recovery");
     }
 
     {
-        printf("\n-- 5. millis() wrap-around does not break the cutoff --\n");
-        FakePort hw; SinkCapture cap;
-        IDevice::setGlobalErrorSink(captureSink, &cap);
-        SolenoidDevice sol("Latch", portFor(hw), 500);
-        sol.begin();
-
-        hw.nowMs = 0xFFFFFFF0u; sol.energize();             // 16 ms before wrap
-        hw.nowMs = 0x00000010u; sol.update();               // 32 ms elapsed across the wrap
-        check(sol.getState() == DeviceState::BUSY && sol.getOnTimeMs() == 32, "32 ms elapsed across the wrap, still BUSY");
-        hw.nowMs = 0x000001F4u - 0x10u; sol.update();        // exactly 500 ms elapsed
-        check(sol.getState() == DeviceState::ERRORED,                     "cutoff fires at 500 ms even across the wrap");
-    }
-
-    {
-        printf("\n-- 6. through a bare IDevice* with no sink installed --\n");
+        printf("\n-- 5. a fault between the latch and the scan wins --\n");
         IDevice::setGlobalErrorSink(nullptr);
-        FakePort hw;
-        SolenoidDevice sol("Latch", portFor(hw), 500);
-        IDevice* d = &sol;
-        check(!sol.energize(),                                            "rejected command with no sink is a silent no-op");
-        check(d->begin() && d->getState() == DeviceState::IDLE,           "begin() via IDevice*");
-        check(streq(d->getDeviceName(), "Latch"),                         "getDeviceName() via IDevice*");
-        sol.energize();
-        hw.nowMs = 1000; d->update();
-        check(d->getState() == DeviceState::ERRORED && hw.coil == false,  "cutoff still protects the coil with no sink installed");
-        check(streq(deviceStateToString(d->getState()), "ERRORED"),       "deviceStateToString()");
+        Rig r;
+        r.sol.begin();
+        r.sol.energize();
+        r.sol.update(atMs(0));
+        r.sol.release();
+        r.sol.energize();                                  // accepted: not faulted yet
+        r.sol.update(atMs(500));                           // cutoff fires in this scan
+        check(r.sol.rState.Get() == ST_ERRORED && !r.sol.ioCoil.Get(),    "the cutoff still protects the coil");
+    }
+
+    {
+        printf("\n-- 6. 64-bit time: no wrap anywhere --\n");
+        Rig r(60000);                                      // one minute
+        r.sol.begin();
+        uint64_t past32 = (static_cast<uint64_t>(1) << 32) - 5000000u;   // 5 s before 2^32 us
+        r.sol.energize();
+        r.sol.update(at(past32));
+        r.sol.update(at(past32 + 59999999u));
+        check(r.sol.rState.Get() == ST_BUSY,                              "still BUSY across 2^32 us, 1 us short");
+        r.sol.update(at(past32 + 60000000u));
+        check(r.sol.rState.Get() == ST_ERRORED,                           "the cutoff fires at exactly one minute");
+    }
+
+    {
+        printf("\n-- 7. through a bare IDevice* --\n");
+        Rig r;
+        IDevice* d = &r.sol;
+        check(d->begin() && d->rState.Get() == ST_IDLE,                   "begin() via IDevice*");
+        check(streq(d->udiTypeName(), "Solenoid"),                        "udiTypeName() via IDevice*");
+        r.sol.energize();
+        d->update(atMs(0));
+        d->update(atMs(1000));
+        check(d->rState.Get() == ST_ERRORED && !r.sol.ioCoil.Get(),       "update(t) dispatches; the cutoff protects the coil");
     }
 
     printf("\n%d passed, %d failed\n", s_passed, s_failed);

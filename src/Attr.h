@@ -2,56 +2,73 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 #if defined(__AVR__)
-#include <avr/pgmspace.h>   // avr-libc, not Arduino: flash strings
+#include <avr/pgmspace.h>   // avr-libc, not Arduino: flash strings and tables
+#else
+#ifndef PROGMEM
+#define PROGMEM             // one address space: "flash" data is ordinary const data
+#endif
 #endif
 
 // ==================================================================
-// Attr -- one named value a device exposes to the outside world.
+// Attr -- the RECORD of one attribute, as the framework sees it.
 //
-// A device lists its attributes in IDevice::describe() (see
-// IDescriber.h). Each Attr POINTS AT THE DEVICE'S OWN MEMBER VARIABLE
-// and carries that value's rules: its range, its default and, for a
-// value with named choices, its enumeration. Everything in an Attr is
-// built on the stack while describe() runs, so the rules cost no RAM
-// between calls, only the member itself does.
+// A device does not build these by hand: it declares each attribute
+// once as a UdiAttr member (UdiDeclare.h), and IDevice::describe() hands
+// the framework one Attr per attribute, built on the stack from that
+// declaration. This header holds the record and the vocabulary it is
+// written in: classes, types, numbers, enumerations and flash text.
 //
 // Five classes. The name of every attribute starts with its prefix:
-//   cnf (mount) -- set once, before begin(): pins, bus addresses, gear
-//                  ratios. Refused once the device is running.
-//   cnf (setup) -- configuration that may change at runtime, but never
-//                  while the device is BUSY: speed limits, gains.
+//   cnf (mount) -- read ONCE, at boot, before begin(): pins, ports, bus
+//                  addresses, gear ratios. Never changes while running
+//                  and has no callback; a new value takes effect at the
+//                  next start. On a microcontroller the firmware is the
+//                  configuration (the default, or the sketch sets it
+//                  before begin()); on an OS the framework reads it from
+//                  a config file.
+//   cnf (setup) -- configuration that takes effect immediately at
+//                  runtime (never while the device is BUSY): speed
+//                  limits, gains. Stored, or handed to a callback.
 //   w           -- a request, written from outside while running.
 //   r           -- computed by the device; nobody else writes it.
-//   io          -- process data, exchanged every period through a link.
+//   io          -- process data, exchanged every period through a link,
+//                  in the scan. ALL hardware access lives behind io: a
+//                  device's logic writes io OUT and reads io IN, and an
+//                  io server device does the actual pin/bus access.
 //                  Direction is from the device's point of view: IN is
 //                  read by the device, OUT is written by it.
 //
 // EVERY ATTRIBUTE WORKS THE SAME WAY. No name is special to the
-// framework. Any attribute may carry a write hook (onWrite()): a cnf
-// without one just stores its value, a cnf with one can also change
-// whatever depends on it, a w with one turns the write into an action.
-// Nothing else distinguishes a "command": a device may take its verbs
-// through one enumerated wCommand, through several w attributes, or
-// both. An r attribute is never written from outside, so a hook on it
-// would never run.
+// framework except rState, which every device has (IDevice.h).
 //
-// RESERVED NAMES: rState, rStatus and rError. The framework lists them
-// for every device (from getState(), getStatus() and getError()), so a
-// device never declares them itself.
+// THE FRAMEWORK CHECKS, THE DEVICE DECIDES. A write from outside is
+// checked against the rules (class, type, enumeration, range) by the
+// framework. Then, if the attribute has a write hook (every w, and a
+// cnf declared with a callback), the framework calls the hook INSTEAD
+// OF STORING: the device's Set_xxx() stores the value itself, or not,
+// and returns whether it accepted it. Without a hook the framework
+// stores the value. A write is an event: an accepted write runs the
+// hook even when the value did not change.
 //
-// Nothing here checks or applies a write: that belongs to the framework
-// built on top (Universal-Device-Framework), so every device gets the
-// same rules and no device repeats them. This header only fixes the
-// shape every device describes itself with.
+// SET_ LATCHES, UPDATE ACTS. A callback only validates and latches the
+// request: it is fast and non-blocking, touches no hardware and takes
+// no timestamp. Requests and inputs become outputs, timestamps and new
+// state only in update(const UdiTime&). This is what lets a runtime
+// choose WHEN callbacks run: on a microcontroller writes are applied in
+// the scan; on an OS they may be applied immediately from another
+// thread. Either way the runtime guarantees a callback never runs at the
+// same time as any update() of its device tree, so devices need no
+// locks. io is always exchanged in the scan.
 //
 // Plain C++11, no Arduino dependency, no heap.
 //
-// TEXT LIVES IN FLASH ON AVR. Names, units and enumerations are written
-// UDI_TEXT("...") and have the opaque type AttrText. On AVR, where a
-// plain string literal is copied into the 2 KB of RAM at startup, they
-// stay in flash; everywhere else UDI_TEXT is an ordinary literal. Read
-// them only through the attrText...() helpers below, never as a char*.
+// TEXT LIVES IN FLASH ON AVR. Names, units and enum descriptions have
+// the opaque type AttrText. On AVR, where a plain string literal is
+// copied into the 2 KB of RAM at startup, they stay in flash; everywhere
+// else they are ordinary strings. Read them only through the helpers
+// below, never as a char*.
 // ==================================================================
 
 // A string that may be in flash. Deliberately incomplete: it cannot be
@@ -63,6 +80,15 @@ struct AttrText;
 #else
 #define UDI_TEXT(s) (reinterpret_cast<const AttrText*>(s))
 #endif
+
+// Copies n bytes of flash data (a table entry, a descriptor) into RAM.
+inline void udiReadFlash(void* dst, const void* src, size_t n) {
+#if defined(__AVR__)
+    memcpy_P(dst, src, n);
+#else
+    memcpy(dst, src, n);
+#endif
+}
 
 inline char attrTextChar(const AttrText* t, size_t i) {
     const char* p = reinterpret_cast<const char*>(t);
@@ -82,9 +108,9 @@ inline bool attrTextEquals(const AttrText* t, const char* s, size_t n) {
     return attrTextChar(t, n) == '\0';
 }
 
-// Field `index` of a '|'-separated list ("None|Energize|Release") into
-// dst, always null-terminated. Returns false if there is no such field or
-// dst was too small (the text is then cut short).
+// Field `index` of a '|'-separated text into dst, always null-terminated.
+// Returns false if there is no such field or dst was too small (the
+// text is then cut short).
 inline bool attrTextField(const AttrText* list, uint8_t index, char* dst, size_t size) {
     if (size == 0) return false;
     dst[0] = '\0';
@@ -104,7 +130,7 @@ inline bool attrTextField(const AttrText* list, uint8_t index, char* dst, size_t
     return true;
 }
 
-// The whole text into dst (a name or unit is one field).
+// The whole text into dst. False if t is nullptr or dst was too small.
 inline bool attrTextCopy(const AttrText* t, char* dst, size_t size) {
     return attrTextField(t, 0, dst, size);
 }
@@ -117,228 +143,163 @@ enum class AttrDir : uint8_t {
     OUT  = 2,   // io the device writes
 };
 
-// The C types an attribute may point at. Fixed widths, so a value means
-// the same thing on AVR, ARM and Linux when it crosses a wire.
-enum class AttrType : uint8_t { BOOL, U8, I8, U16, I16, U32, I32, F32, F64 };
+// The C types an attribute may hold. Fixed widths, so a value means the
+// same thing on AVR, ARM and Linux when it crosses a wire. STR is text
+// of a fixed capacity, in a buffer inside the device (no heap).
+enum class AttrType : uint8_t { BOOL, U8, I8, U16, I16, U32, I32, F32, F64, STR };
 
-// A limit or a default, held in the attribute's own kind of number so
-// an i32 limit stays exact and a float one is not rounded. Which member
-// is valid follows Attr::type: u for BOOL and the unsigned types, i for
-// the signed ones, f for F32, d for F64.
+inline bool attrTypeIsReal(AttrType t)   { return t == AttrType::F32 || t == AttrType::F64; }
+inline bool attrTypeIsSigned(AttrType t) { return t == AttrType::I8 || t == AttrType::I16 || t == AttrType::I32; }
+inline bool attrTypeIsText(AttrType t)   { return t == AttrType::STR; }
+
+// One value, a limit or a default, in the attribute's own kind of number
+// so an i32 stays exact and a float is not rounded. Which member is
+// valid follows the attribute's type: u for BOOL and the unsigned types,
+// i for the signed ones, f for F32, d for F64, s for STR (the device's
+// own buffer, null-terminated). The constexpr makers let a declaration's
+// limits and default be built at compile time, in flash.
 union AttrNumber {
     uint32_t u;
     int32_t  i;
     float    f;
     double   d;
+    char*    s;
+
+    constexpr AttrNumber() : d(0.0) {}   // all bytes zero, on every platform
+
+    static constexpr AttrNumber ofU(uint32_t v) { return AttrNumber(v, 0); }
+    static constexpr AttrNumber ofI(int32_t v)  { return AttrNumber(v, 0, 0); }
+    static constexpr AttrNumber ofF(float v)    { return AttrNumber(v, 0, 0, 0); }
+    static constexpr AttrNumber ofD(double v)   { return AttrNumber(v, 0, 0, 0, 0); }
+
+private:
+    constexpr AttrNumber(uint32_t v, int)              : u(v) {}
+    constexpr AttrNumber(int32_t v, int, int)          : i(v) {}
+    constexpr AttrNumber(float v, int, int, int)       : f(v) {}
+    constexpr AttrNumber(double v, int, int, int, int) : d(v) {}
 };
 
-// NO_MIN and NO_MAX are passed to range() for an open end.
-struct AttrNoLimit {};
-static const AttrNoLimit NO_MIN = AttrNoLimit();
-static const AttrNoLimit NO_MAX = AttrNoLimit();
+// ------------------------------------------------------------------
+// Enumerations: named numbers with descriptions, in flash. Declared
+// with UDI_ENUM (UdiDeclare.h); numbers are explicit, so gaps are fine.
+// ------------------------------------------------------------------
+struct AttrEnumEntry {
+    int32_t     value;
+    const char* text;      // flash on AVR; read through the helpers
+};
+
+struct AttrEnum {
+    uint8_t              count;
+    const AttrEnumEntry* entries;
+};
+
+inline uint8_t attrEnumCount(const AttrEnum* e) {
+    if (e == nullptr) return 0;
+    AttrEnum h;
+    udiReadFlash(&h, e, sizeof(h));
+    return h.count;
+}
+
+// Entry i: its number, and its description into dst. False when i is
+// out of range or dst was too small (the text is then cut short).
+inline bool attrEnumEntry(const AttrEnum* e, uint8_t i, int32_t& value, char* dst, size_t size) {
+    if (size > 0) dst[0] = '\0';
+    if (e == nullptr) return false;
+    AttrEnum h;
+    udiReadFlash(&h, e, sizeof(h));
+    if (i >= h.count) return false;
+    AttrEnumEntry entry;
+    udiReadFlash(&entry, h.entries + i, sizeof(entry));
+    value = entry.value;
+    return attrTextCopy(reinterpret_cast<const AttrText*>(entry.text), dst, size);
+}
+
+// The description of value v into dst. False when v is not listed (dst
+// is then empty) or dst was too small.
+inline bool attrEnumFind(const AttrEnum* e, int32_t v, char* dst, size_t size) {
+    if (size > 0) dst[0] = '\0';
+    if (e == nullptr) return false;
+    AttrEnum h;
+    udiReadFlash(&h, e, sizeof(h));
+    for (uint8_t i = 0; i < h.count; ++i) {
+        AttrEnumEntry entry;
+        udiReadFlash(&entry, h.entries + i, sizeof(entry));
+        if (entry.value == v) return attrTextCopy(reinterpret_cast<const AttrText*>(entry.text), dst, size);
+    }
+    return false;
+}
+
+inline bool attrEnumHas(const AttrEnum* e, int32_t v) {
+    if (e == nullptr) return false;
+    AttrEnum h;
+    udiReadFlash(&h, e, sizeof(h));
+    for (uint8_t i = 0; i < h.count; ++i) {
+        AttrEnumEntry entry;
+        udiReadFlash(&entry, h.entries + i, sizeof(entry));
+        if (entry.value == v) return true;
+    }
+    return false;
+}
 
 struct Attr;
 
-// Optional reaction to a write, on an attribute of any class, called by
-// the framework AFTER the new value is checked and stored and before the
-// next update(). A refused write never calls it.
-//   * A WRITE IS AN EVENT, NOT A LEVEL: the hook runs on every accepted
-//     write, even when the value did not change. Writing a command twice
-//     runs it twice.
-//   * Arguments are ordinary attributes written BEFORE the one whose hook
-//     acts on them (wTargetPos, then wCommand = MoveAbs), as on a CiA 402
-//     drive.
-//   * A mount hook runs before begin(), so it may only record or derive
-//     values; it must not touch hardware.
-//   * A hook that cannot do what was asked reports through the device's
-//     own Error as usual, so the outcome shows in rState and rError.
-// Same {fn, ctx} shape as every hook in the family.
+// The device's reaction to a write from outside, called by the framework
+// AFTER the rules passed and INSTEAD OF storing (see the header comment).
+// value is the new value in the attribute's own form; ctx is the device.
+// Returns false when the device refuses it.
 struct AttrWriteHook {
-    void (*fn)(const Attr& attr, void* ctx);
-    void* ctx;
-};
-
-// Optional source for an r attribute whose value is computed rather than
-// held in a member (the framework's rState is getState()). fn returns
-// the value in the attribute's own form, the same union member as its
-// limits. When fn is set, `value` is nullptr and every reader calls fn
-// instead. Only r attributes are computed: a writable attribute needs a
-// variable to store into.
-struct AttrReadFn {
-    AttrNumber (*fn)(void* ctx);
+    bool (*fn)(const Attr& attr, const AttrNumber& value, void* ctx);
     void* ctx;
 };
 
 struct Attr {
-    // Which of minimum, maximum and defaultValue were given. Absent means NO_MIN, NO_MAX
-    // or no default.
+    // Which of minimum, maximum and defaultValue were declared. Absent
+    // means NO_MIN, NO_MAX or NO_DEFAULT.
     enum Flags : uint8_t { HAS_MIN = 1, HAS_MAX = 2, HAS_DEFAULT = 4 };
 
-    const AttrText*      name;       // "rEnergized"; no '/' or '.' (they build paths)
-    AttrClass            cls;
-    AttrType             type;
-    AttrDir              dir;
-    uint8_t              flags;
-    void*                value;      // the device's own variable, of type `type`; nullptr when computed
-    const AttrText*      unit;       // "ms", "rad"; nullptr when unitless
-    AttrNumber           minimum;
-    AttrNumber           maximum;
-    AttrNumber           defaultValue;  // used when nothing configured the value
-    const AttrText*      enumNames;     // "None|Energize|..."; nullptr: NO_ENUM
-    uint8_t              enumCount;     // fields in enumNames
-    AttrWriteHook        writeHook;     // {nullptr, nullptr} when the device needs none
-    AttrReadFn           readFn;        // {nullptr, nullptr} unless computed (attrRComputed)
-
-    // --------------------------------------------------------------
-    // Chained setters, so one describe() line declares one attribute:
-    //   d.attr(attrSetup(UDI_TEXT("cnfVMax"), vMax_, UDI_TEXT("rad/s")).range(0.0f, 10.0f).def(2.0f));
-    // (Named minimum/maximum, not min/max: Arduino.h defines min() and
-    // max() as macros.)
-    // Each converts its argument to the attribute's own type, so
-    // range(0, 53) is fine for a uint8_t and range(0, 1.5f) for a float.
-    // --------------------------------------------------------------
-    template <typename Lo, typename Hi>
-    Attr& range(Lo lo, Hi hi) {
-        setMin(lo);
-        setMax(hi);
-        return *this;
-    }
-
-    template <typename V>
-    Attr& def(V v) {
-        store(defaultValue, v);
-        flags = static_cast<uint8_t>(flags | HAS_DEFAULT);
-        return *this;
-    }
-
-    // For integer attributes only. The names are one '|'-separated text
-    // and the values are their positions, 0 to count-1, which is how a
-    // wCommand or a state is numbered anyway and keeps the whole list one
-    // flash string. The framework refuses a write outside 0..count-1.
-    Attr& enumOf(const AttrText* names) {
-        enumNames = names;
-        uint16_t n = 1;
-        for (size_t i = 0; attrTextChar(names, i) != '\0'; ++i) {
-            if (attrTextChar(names, i) == '|') ++n;
-        }
-        enumCount = static_cast<uint8_t>(n > 255 ? 255 : n);
-        return *this;
-    }
-
-    Attr& onWrite(void (*fn)(const Attr&, void*), void* ctx) {
-        writeHook.fn  = fn;
-        writeHook.ctx = ctx;
-        return *this;
-    }
+    const AttrText* name;          // "rEnergized"; no '/' or '.' (they build paths)
+    AttrClass       cls;
+    AttrType        type;
+    AttrDir         dir;
+    uint8_t         flags;
+    AttrNumber*     value;         // the attribute's value, in its own form
+    const AttrText* unit;          // "ms", "rad"; nullptr when unitless
+    AttrNumber      minimum;
+    AttrNumber      maximum;       // for STR: the capacity in characters (u)
+    AttrNumber      defaultValue;  // used when nothing configured the value
+    const AttrText* defaultText;   // STR only: the default text (HAS_DEFAULT)
+    const AttrEnum* enumDef;       // nullptr: NO_ENUM
+    AttrWriteHook   writeHook;     // {nullptr, nullptr}: the framework stores
 
     bool hasMin() const     { return (flags & HAS_MIN) != 0; }
     bool hasMax() const     { return (flags & HAS_MAX) != 0; }
     bool hasDefault() const { return (flags & HAS_DEFAULT) != 0; }
-    bool hasEnum() const    { return enumNames != nullptr; }
-    bool inEnum(int32_t v) const { return hasEnum() && v >= 0 && v < enumCount; }
-    bool isComputed() const { return readFn.fn != nullptr; }
+    bool hasEnum() const    { return enumDef != nullptr; }
+    bool inEnum(int32_t v) const { return attrEnumHas(enumDef, v); }
 
-    // The name of enumeration value v into dst. False when v is not one
-    // of the values or dst was too small.
-    bool enumName(int32_t v, char* dst, size_t size) const {
-        if (!inEnum(v)) { if (size > 0) dst[0] = '\0'; return false; }
-        return attrTextField(enumNames, static_cast<uint8_t>(v), dst, size);
-    }
-
-private:
-    template <typename V> void setMin(V v) { store(minimum, v); flags = static_cast<uint8_t>(flags | HAS_MIN); }
-    template <typename V> void setMax(V v) { store(maximum, v); flags = static_cast<uint8_t>(flags | HAS_MAX); }
-    void setMin(AttrNoLimit) {}
-    void setMax(AttrNoLimit) {}
-
-    template <typename V>
-    void store(AttrNumber& n, V v) const {
-        switch (type) {
-            case AttrType::F32: n.f = static_cast<float>(v);  break;
-            case AttrType::F64: n.d = static_cast<double>(v); break;
-            case AttrType::I8: case AttrType::I16: case AttrType::I32:
-                n.i = static_cast<int32_t>(v); break;
-            default:
-                n.u = static_cast<uint32_t>(v); break;
-        }
-    }
+    // The description of enumeration value v into dst. False when v is
+    // not one of the values or dst was too small.
+    bool enumName(int32_t v, char* dst, size_t size) const { return attrEnumFind(enumDef, v, dst, size); }
 };
 
 // ------------------------------------------------------------------
-// Type deduction. The helpers below take the AttrType from the
-// variable itself, so a mismatch between `type` and `value` cannot be
-// written by hand. A variable of any other type (an enum, long on a
-// 64-bit host, char) does not compile -- on purpose. An enumerated
-// attribute is backed by a fixed-width integer, not a C++ enum.
+// Type deduction: the AttrType of a declared C++ type. Any other type
+// (long on a 64-bit host, char, a C++ enum) has no overload and does
+// not compile -- on purpose; an enumerated attribute is declared with a
+// fixed-width integer type and names its UDI_ENUM.
 // ------------------------------------------------------------------
-inline AttrType attrTypeOf(bool*)     { return AttrType::BOOL; }
-inline AttrType attrTypeOf(uint8_t*)  { return AttrType::U8; }
-inline AttrType attrTypeOf(int8_t*)   { return AttrType::I8; }
-inline AttrType attrTypeOf(uint16_t*) { return AttrType::U16; }
-inline AttrType attrTypeOf(int16_t*)  { return AttrType::I16; }
-inline AttrType attrTypeOf(uint32_t*) { return AttrType::U32; }
-inline AttrType attrTypeOf(int32_t*)  { return AttrType::I32; }
-inline AttrType attrTypeOf(float*)    { return AttrType::F32; }
+constexpr AttrType attrTypeOf(bool*)     { return AttrType::BOOL; }
+constexpr AttrType attrTypeOf(uint8_t*)  { return AttrType::U8; }
+constexpr AttrType attrTypeOf(int8_t*)   { return AttrType::I8; }
+constexpr AttrType attrTypeOf(uint16_t*) { return AttrType::U16; }
+constexpr AttrType attrTypeOf(int16_t*)  { return AttrType::I16; }
+constexpr AttrType attrTypeOf(uint32_t*) { return AttrType::U32; }
+constexpr AttrType attrTypeOf(int32_t*)  { return AttrType::I32; }
+constexpr AttrType attrTypeOf(float*)    { return AttrType::F32; }
 // On AVR a double IS a 4-byte float, so it must travel as F32.
-inline AttrType attrTypeOf(double*)   { return sizeof(double) == 8 ? AttrType::F64 : AttrType::F32; }
+constexpr AttrType attrTypeOf(double*)   { return sizeof(double) == 8 ? AttrType::F64 : AttrType::F32; }
 
-template <typename T>
-inline Attr makeAttr(const AttrText* name, AttrClass cls, AttrDir dir, T& value, const AttrText* unit) {
-    Attr a = Attr();
-    a.name  = name;
-    a.cls   = cls;
-    a.type  = attrTypeOf(&value);
-    a.dir   = dir;
-    a.value = &value;
-    a.unit  = unit;
-    return a;
-}
-
-// One helper per class, so a describe() line reads as what it declares.
-template <typename T>
-inline Attr attrMount(const AttrText* name, T& value, const AttrText* unit = nullptr) {
-    return makeAttr(name, AttrClass::MOUNT, AttrDir::NONE, value, unit);
-}
-template <typename T>
-inline Attr attrSetup(const AttrText* name, T& value, const AttrText* unit = nullptr) {
-    return makeAttr(name, AttrClass::SETUP, AttrDir::NONE, value, unit);
-}
-template <typename T>
-inline Attr attrW(const AttrText* name, T& value, const AttrText* unit = nullptr) {
-    return makeAttr(name, AttrClass::W, AttrDir::NONE, value, unit);
-}
-template <typename T>
-inline Attr attrR(const AttrText* name, T& value, const AttrText* unit = nullptr) {
-    return makeAttr(name, AttrClass::R, AttrDir::NONE, value, unit);
-}
-template <typename T>
-inline Attr attrIn(const AttrText* name, T& value, const AttrText* unit = nullptr) {
-    return makeAttr(name, AttrClass::IO, AttrDir::IN, value, unit);
-}
-template <typename T>
-inline Attr attrOut(const AttrText* name, T& value, const AttrText* unit = nullptr) {
-    return makeAttr(name, AttrClass::IO, AttrDir::OUT, value, unit);
-}
-
-// An r attribute computed by fn instead of read from a member (see
-// AttrReadFn). There is no variable to deduce the type from, so it is
-// given; fn must return the number in that type's union member.
-inline Attr attrRComputed(const AttrText* name, AttrType type, AttrNumber (*fn)(void* ctx),
-                          void* ctx, const AttrText* unit = nullptr) {
-    Attr a = Attr();
-    a.name      = name;
-    a.cls       = AttrClass::R;
-    a.type      = type;
-    a.dir       = AttrDir::NONE;
-    a.value     = nullptr;
-    a.unit      = unit;
-    a.readFn.fn  = fn;
-    a.readFn.ctx = ctx;
-    return a;
-}
-
-// For logging and the text debug print. enum class has no implicit
-// conversion to an integer, same reason deviceStateToString() exists.
+// For logging and the text debug print.
 inline const char* attrClassToString(AttrClass cls) {
     switch (cls) {
         case AttrClass::MOUNT: return "mount";
@@ -361,6 +322,7 @@ inline const char* attrTypeToString(AttrType type) {
         case AttrType::I32:  return "i32";
         case AttrType::F32:  return "f32";
         case AttrType::F64:  return "f64";
+        case AttrType::STR:  return "str";
         default:             return "?";
     }
 }
