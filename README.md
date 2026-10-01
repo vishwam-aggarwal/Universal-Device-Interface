@@ -68,21 +68,25 @@ This library depends on nothing. Everything else depends on it.
 
 ## Features
 
-- `IDevice` — abstract base: `begin()`, optional `update()` and `end()`, `isOnline()`,
-  `getState()`, `getStatus()`, `getError()`, `getStatusString()`, `getErrorString()`,
-  `getDeviceName()`, and an optional `describe()`.
+- `IDevice` — abstract base. **An implementer writes only** `begin()` (plus `update()` /
+  `end()` if needed), `describeSelf()` listing its attributes, and a write hook where a
+  write must act. State, status, error and the name are plain members it **assigns**
+  (`rState`, `rStatus`, `rError`, `deviceName`); their text is a names list declared once
+  (`statusNames`, `errorNames`). `IDevice` serves them as they are: as the `rState` /
+  `rStatus` / `rError` attributes of every device, and through read-only `getState()`,
+  `getStatus()`, `getError()`, `isOnline()`, `getDeviceName()`, `statusName()`,
+  `errorName()`.
 - `describe(IDescriber&)` + `Attr` — a device lists the devices it mounts and the
   attributes it exposes, pointing at its own members. Every attribute carries its class
   (`cnf` mount, `cnf` setup, `w`, `r`, `io`), type, unit, range (`NO_MIN` / `NO_MAX`),
   default and, optionally, an enumeration of named choices. Nothing is stored; [Universal-Device-Framework](https://github.com/vishwam-aggarwal/Universal-Device-Framework)
-  builds its device tree on it. Defaults to listing nothing, so existing devices are
-  unchanged.
+  builds its device tree on it. `describe()` always lists `rState`, `rStatus` and
+  `rError` first, then whatever the device's `describeSelf()` lists.
 - **Every attribute works the same way.** Any attribute may carry an optional write hook
   (`.onWrite()`), which the framework runs after every accepted write: a `cnf` without one
   just stores its value, a `cnf` with one can also change what depends on it, a `w` with
-  one turns the write into an action. No name is special. An `r` value may be computed
-  instead of held in a member (`attrRComputed()`); the framework uses that to list
-  `rState`, `rStatus` and `rError` for every device, so those names are reserved.
+  one turns the write into an action. No name is special, except that `rState`,
+  `rStatus` and `rError` are reserved: every device already has them.
 - `DeviceState` — one real, shared `enum class` (`OFFLINE` / `IDLE` / `BUSY` / `ERRORED`)
   so generic code can hold a mixed list of `IDevice*` and branch on state without knowing
   the concrete type.
@@ -211,16 +215,22 @@ directly.
 `src/SolenoidDevice.h` is the template — copy its shape:
 
 1. Derive from `IDevice`. Declare local `enum Status { STATUS_NONE = 0, ... }` and
-   `enum Error { ERR_NONE = 0, ... }`.
-2. Implement `begin()` (bring hardware to a known-safe state, then go online),
-   `isOnline()`, `getState()` (apply the precedence rule `OFFLINE` > `ERRORED` > `BUSY` >
-   `IDLE`), `getStatus()`/`getError()`, both `*String()` mappers, and `getDeviceName()`.
-3. Override `update()` only if the device needs periodic servicing.
-4. Call `reportError("<Layer>", code)` wherever something goes wrong. Decide separately
-   whether that fault latches — `reportError()` itself never changes state.
-5. Keep hardware I/O out of the interface header: inject it (as `SolenoidDevice` does with
+   `enum Error { ERR_NONE = 0, ... }`, and in the constructor body assign
+   `deviceName = name;` and the names lists in the same order,
+   `statusNames = UDI_TEXT("None|...")`, `errorNames = UDI_TEXT("No error|...")`: a code
+   is its position in its list.
+2. Implement `begin()`: bring hardware to a known-safe state, then set
+   `rState = DeviceState::IDLE`. That is the only required override.
+3. **Assign `rState`, `rStatus` and `rError` wherever they change**, following the
+   precedence rule `OFFLINE` > `ERRORED` > `BUSY` > `IDLE`. Never write a getter: what
+   you assign is what is served.
+4. Override `update()` only if the device needs periodic servicing.
+5. Call `reportError("<Layer>", code)` wherever something goes wrong. Decide separately
+   whether that fault latches (assign `rError` and `rState = ERRORED`) —
+   `reportError()` itself never changes anything.
+6. Keep hardware I/O out of the interface header: inject it (as `SolenoidDevice` does with
    `SolenoidPort`) or put it in a separate Arduino-only backend `.cpp`.
-6. Optional: override `describe()` to list the devices you own (`d.child("name", member)`)
+7. Override `describeSelf()` to list the devices you own (`d.child("name", member)`)
    and the values you expose, one line each, e.g.
    `d.attr(attrSetup(UDI_TEXT("cnfVMax"), vMax_, UDI_TEXT("rad/s")).range(0.0f, 10.0f).def(2.0f))`.
    Helpers: `attrMount`, `attrSetup`, `attrW`, `attrR`, `attrIn`, `attrOut`; chain `.range()`,
@@ -232,7 +242,7 @@ directly.
    something derived from it, or none at all for a value that is only stored. A device
    with several verbs can take them through one enumerated `w` (`SolenoidDevice`'s
    `wCommand`), through one `w` per action, or both. Don't declare `rState`, `rStatus` or
-   `rError`: the framework lists them for you.
+   `rError`: `describe()` lists them for you.
    Override `end()` if the device must leave hardware safe on teardown.
 
 ---
@@ -249,28 +259,36 @@ class IDevice {
 public:
     virtual ~IDevice() = default;
 
-    virtual bool begin() = 0;
+    virtual bool begin() = 0;                      // the only required override
     virtual void update() {}                       // optional; default no-op
     virtual void end() {}                          // optional teardown; default no-op
-    virtual void describe(IDescriber& d) {}        // optional; default lists nothing
 
-    virtual bool        isOnline() const = 0;
-    virtual DeviceState getState() const = 0;     // shared, canonical
-    virtual uint32_t    getStatus() const = 0;    // per-class enum, 0 = STATUS_NONE
-    virtual uint32_t    getError()  const = 0;    // per-class enum, 0 = ERR_NONE
-    virtual const char* getStatusString(uint32_t status) const = 0;
-    virtual const char* getErrorString(uint32_t err) const = 0;
+    void describe(IDescriber& d);                  // rState, rStatus, rError, then describeSelf()
 
-    virtual const char* getDeviceName() const = 0;
+    DeviceState getState() const;                  // read-only views of the members below
+    uint32_t    getStatus() const;
+    uint32_t    getError() const;
+    bool        isOnline() const;                  // rState != OFFLINE
+    const char* getDeviceName() const;
+    bool statusName(uint32_t code, char* dst, size_t size) const;   // name from statusNames
+    bool errorName(uint32_t code, char* dst, size_t size) const;    // name from errorNames
 
     static void setGlobalErrorSink(GlobalErrorSink sink, void* userContext = nullptr);
 
 protected:
+    DeviceState     rState      = DeviceState::OFFLINE;   // the device assigns these;
+    uint32_t        rStatus     = 0;                       // they ARE the served values
+    uint32_t        rError      = 0;
+    const char*     deviceName  = "";
+    const AttrText* statusNames = nullptr;                 // UDI_TEXT("None|...")
+    const AttrText* errorNames  = nullptr;                 // UDI_TEXT("No error|...")
+
+    virtual void describeSelf(IDescriber& d) {}            // the device's own attributes
     void reportError(const char* layer, uint32_t err) const;
 };
 ```
 
-`update()` is the one non-pure method: devices that read/act live on every call (encoders)
+`update()` is optional: devices that read/act live on every call (encoders)
 or have a differently-shaped real-time entry point (`MotionDevice::tick(float t)`) simply
 don't override it. A derived *interface* that wants it mandatory re-declares it as
 `void update() override = 0;`.
@@ -284,8 +302,8 @@ conflated them.
 | Tier | Type | Scope | Why |
 |---|---|---|---|
 | **State** | `DeviceState` (real shared enum) | universal | `OFFLINE/IDLE/BUSY/ERRORED` is a small, closed set that means the same thing for *any* device. Defining it once lets generic code hold a bare `IDevice*` and branch meaningfully. |
-| **Status** | per-class local `enum Status`, `uint32_t` on the wire | device-specific | What the device is *doing* right now. Fundamentally different per hardware family, so it's convention-only, `0 = STATUS_NONE`. |
-| **Error** | per-class local `enum Error`, `uint32_t` on the wire | device-specific | A motor's faults have nothing in common with an encoder's. Same convention, `0 = ERR_NONE`. |
+| **Status** | per-class codes in `rStatus`, `uint32_t` on the wire, named by `statusNames` | device-specific | What the device is *doing* right now. Fundamentally different per hardware family, so it's convention-only, `0 = STATUS_NONE`. |
+| **Error** | per-class codes in `rError`, `uint32_t` on the wire, named by `errorNames` | device-specific | A motor's faults have nothing in common with an encoder's. Same convention, `0 = ERR_NONE`. |
 
 C++ can't "inherit" one enum's members into another, which is exactly why Status and Error
 stay per-class while State is the one thing worth making a real shared type.
@@ -300,7 +318,10 @@ typedef void (*GlobalErrorSink)(const char* layer, const char* sourceName,
 
 Installed **once** with `IDevice::setGlobalErrorSink(sink, userContext)`. Every device in
 every library reports through the protected `reportError(layer, err)` helper, which calls
-the sink with `(layer, getDeviceName(), err, getErrorString(err), userContext)`.
+the sink with `(layer, deviceName, err, <err's name from errorNames>, userContext)`. The
+name is copied out of flash into a buffer on the reporting device's stack, so
+**`errorString` is valid only during the call**: a sink that keeps it must copy it. A code
+with no name arrives as `"Unknown error"`.
 
 - `layer` is the call-site string (`"MotorDriver"`, `"MotionDevice"`, `"Encoder"`, ...) —
   that plus `sourceName` is how one printer function tells reports apart.
@@ -330,10 +351,12 @@ every library in the family follows when it derives from `IDevice`.
 
 **State precedence.** When more than one could apply: `OFFLINE` > `ERRORED` > `BUSY` >
 `IDLE`. Not online → `OFFLINE` regardless of any latched error; online with a latched error
-→ `ERRORED` regardless of activity. `isOnline()` must agree: `OFFLINE` ⇔ `!isOnline()`.
+→ `ERRORED` regardless of activity. The device applies it whenever it assigns `rState`;
+`isOnline()` is derived (`rState != OFFLINE`), so it always agrees.
 
 **Naming.** `enum Status { STATUS_NONE = 0, STATUS_... }` and
-`enum Error { ERR_NONE = 0, ERR_... }`, both local to the concrete class. Use the `STATUS_`
+`enum Error { ERR_NONE = 0, ERR_... }`, both local to the concrete class, numbered 0..N-1
+with no gaps, in the same order as `statusNames` / `errorNames`. Use the `STATUS_`
 prefix, not `ST_` — `ST_IDLE` sitting next to `DeviceState::IDLE` is confusing.
 
 **Never fake `BUSY`.** A backend with no real way to know it's busy (an open-loop RC servo
@@ -405,18 +428,20 @@ run `.vscode/build-debug.bat`, which configures with NMake from a VS developer s
 - `tests/test_device_sink.cpp` defines two non-motion test doubles (`MockSolenoid`,
   `MockCurrentSensor`) and covers: `reportError()` dispatch (layer / name / code / string /
   userContext all arrive intact), one sink registration serving both device types, uninstall
-  via `setGlobalErrorSink(nullptr)`, and the full `OFFLINE → IDLE → BUSY → ERRORED → IDLE`
-  lifecycle observed through a bare `IDevice*`.
+  via `setGlobalErrorSink(nullptr)`, the full `OFFLINE → IDLE → BUSY → ERRORED → IDLE`
+  lifecycle observed through a bare `IDevice*`, and error names (an unlisted code, a device
+  with no lists, a short buffer).
 - `tests/test_solenoid_device.cpp` runs the shipped `SolenoidDevice` against a fake
   `SolenoidPort` with a hand-advanced clock: rejected-before-`begin()` (reported, not
   latched), the protective cutoff (latched, reported once, coil forced off), recovery,
   `millis()` wrap-around, and operation with no sink installed.
-- `tests/test_describe.cpp` walks `describe()` with a recording describer: the defaults
-  list nothing, `SolenoidDevice`'s three attributes point at its own members with their
+- `tests/test_describe.cpp` walks `describe()` with a recording describer: every device
+  lists `rState` / `rStatus` / `rError` first, pointing at what it assigned (with its names
+  lists as enumerations), `SolenoidDevice`'s own three attributes point at its members with their
   ranges, defaults and enumerations, `wCommand`'s hook runs each command with the outcome
   visible in the device's state and error, a parent lists its children and `io`
   attributes, `end()` dispatches, types and limits are deduced and stored exactly, mount
-  and setup attributes carry hooks (or none), and a computed `r` attribute reads live.
+  and setup attributes carry hooks (or none).
 
 **On hardware**: `arduino-cli compile --fqbn arduino:renesas_uno:unor4wifi -u -p <port>
 examples/SolenoidDeviceDemo`, then open a 115200-baud monitor. The UNO R4 WiFi's native USB

@@ -24,18 +24,13 @@ static bool textIs(const AttrText* t, const char* s) { return attrTextEquals(t, 
 
 static int s_hookCalls = 0;
 static void countHook(const Attr&, void* ctx) { ++*static_cast<int*>(ctx); }
-static AttrNumber readPlusOne(void* ctx) {
-    AttrNumber n = AttrNumber();
-    n.u = *static_cast<uint32_t*>(ctx) + 1;
-    return n;
-}
 
-// Records up to 8 children and 8 attributes, in the order listed.
+// Records up to 8 children and 12 attributes, in the order listed.
 class RecordingDescriber final : public IDescriber {
 public:
     const char* childNames[8] = {};
     IDevice*    children[8]   = {};
-    Attr        attrs[8]      = {};
+    Attr        attrs[12]     = {};
     int         childCount    = 0;
     int         attrCount     = 0;
 
@@ -56,23 +51,22 @@ class TwoLatchBoard : public IDevice {
 public:
     explicit TwoLatchBoard(FakePort& hw)
         : left_("left", SolenoidPort{fakeWriteCoil, fakeNowMs, &hw}, 500),
-          right_("right", SolenoidPort{fakeWriteCoil, fakeNowMs, &hw}, 500) {}
+          right_("right", SolenoidPort{fakeWriteCoil, fakeNowMs, &hw}, 500) {
+        deviceName = "board";
+    }
 
-    bool begin() override { return left_.begin() && right_.begin(); }
+    bool begin() override {
+        if (!left_.begin() || !right_.begin()) return false;
+        rState = DeviceState::IDLE;
+        return true;
+    }
     void end() override { ended_ = true; }
-    void describe(IDescriber& d) override {
+    void describeSelf(IDescriber& d) override {
         d.child("left", left_);
         d.child("right", right_);
         d.attr(attrIn(UDI_TEXT("ioSupplyVolts"), supplyVolts_, UDI_TEXT("V")));
         d.attr(attrOut(UDI_TEXT("ioFanPwm"), fanPwm_));
     }
-    bool isOnline() const override { return left_.isOnline(); }
-    DeviceState getState() const override { return DeviceState::IDLE; }
-    uint32_t getStatus() const override { return 0; }
-    uint32_t getError() const override { return 0; }
-    const char* getStatusString(uint32_t) const override { return "None"; }
-    const char* getErrorString(uint32_t) const override { return "No error"; }
-    const char* getDeviceName() const override { return "board"; }
 
     SolenoidDevice left_, right_;
     float   supplyVolts_ = 0.0f;
@@ -80,31 +74,47 @@ public:
     bool    ended_       = false;
 };
 
-// Implements only the pure virtuals: the defaults must make it a valid leaf.
+// Writes only begin(): no name, no names lists, no attributes of its own.
+// It must still be a valid leaf that serves its state.
 class BareDevice : public IDevice {
 public:
-    bool begin() override { return true; }
-    bool isOnline() const override { return true; }
-    DeviceState getState() const override { return DeviceState::IDLE; }
-    uint32_t getStatus() const override { return 0; }
-    uint32_t getError() const override { return 0; }
-    const char* getStatusString(uint32_t) const override { return "None"; }
-    const char* getErrorString(uint32_t) const override { return "No error"; }
-    const char* getDeviceName() const override { return "bare"; }
+    bool begin() override { rState = DeviceState::IDLE; return true; }
+    void fault(uint32_t code) { rError = code; rState = DeviceState::ERRORED; }
 };
 
 int main() {
     printf("=== describe() / Attr / end() ===\n\n");
 
     {
-        printf("-- 1. the defaults: an existing device lists nothing, end() is a no-op --\n");
+        printf("-- 1. every device serves rState, rStatus and rError; end() is a no-op --\n");
         BareDevice bare;
         IDevice* dev = &bare;
         RecordingDescriber rec;
         dev->describe(rec);
-        check(rec.childCount == 0 && rec.attrCount == 0, "default describe() lists no children and no attributes");
+        check(rec.childCount == 0 && rec.attrCount == 3,  "a device with no describeSelf() lists only its state");
+        const Attr& st = rec.attrs[0];
+        const Attr& ss = rec.attrs[1];
+        const Attr& se = rec.attrs[2];
+        check(textIs(st.name, "rState") && textIs(ss.name, "rStatus") && textIs(se.name, "rError"),
+              "rState, rStatus, rError, in that order");
+        check(st.cls == AttrClass::R && ss.cls == AttrClass::R && se.cls == AttrClass::R, "all three are r");
+        check(st.type == AttrType::U8 && ss.type == AttrType::U32 && se.type == AttrType::U32,
+              "rState is u8, rStatus and rError are u32");
+        char name[16];
+        check(st.enumCount == 4 && st.enumName(3, name, sizeof(name)) && streq(name, "Errored"),
+              "rState enumerates Offline|Idle|Busy|Errored");
+        check(!ss.hasEnum() && !se.hasEnum(),             "no names lists: rStatus and rError are plain numbers");
+        check(*static_cast<uint8_t*>(st.value) == static_cast<uint8_t>(DeviceState::OFFLINE),
+              "rState reads OFFLINE before begin()");
+        dev->begin();
+        bare.fault(5);
+        check(*static_cast<uint8_t*>(st.value) == static_cast<uint8_t>(DeviceState::ERRORED) &&
+              *static_cast<uint32_t*>(se.value) == 5,     "the attributes read what the device assigned");
+        check(dev->getState() == DeviceState::ERRORED && dev->getError() == 5 && dev->isOnline(),
+              "and so do the accessors; ERRORED is still online");
+        check(streq(dev->getDeviceName(), ""),            "no name assigned: empty");
         dev->end();
-        check(dev->getState() == DeviceState::IDLE,      "default end() changes nothing");
+        check(dev->getState() == DeviceState::ERRORED,   "default end() changes nothing");
     }
 
     {
@@ -114,15 +124,19 @@ int main() {
         RecordingDescriber rec;
         static_cast<IDevice&>(sol).describe(rec);
 
-        check(rec.childCount == 0 && rec.attrCount == 3,                      "no children, three attributes");
-        const Attr& cnf = rec.attrs[0];
+        check(rec.childCount == 0 && rec.attrCount == 6,                      "no children, three state + three own attributes");
+        check(rec.attrs[1].enumCount == 2 && rec.attrs[2].enumCount == 3,    "rStatus and rError carry the device's names");
+        char text[48];
+        check(rec.attrs[2].enumName(SolenoidDevice::ERR_ON_TIME_EXCEEDED, text, sizeof(text)) &&
+              streq(text, "Coil held past max on-time; force-released"), "an error's name is its position in errorNames");
+        const Attr& cnf = rec.attrs[3];
         check(textIs(cnf.name, "cnfMaxOnTimeMs") && cnf.cls == AttrClass::MOUNT, "cnfMaxOnTimeMs is a mount attribute");
         check(cnf.type == AttrType::U32 && textIs(cnf.unit, "ms"),             "type u32 deduced from the member, unit ms");
         check(*static_cast<uint32_t*>(cnf.value) == 500,                      "value points at maxOnTimeMs_ (500)");
         check(cnf.hasMin() && cnf.minimum.u == 1 && !cnf.hasMax(),            "range 1 .. NO_MAX");
         check(!cnf.hasDefault(),                                              "no default: a mount value without one must be configured");
 
-        const Attr& w = rec.attrs[1];
+        const Attr& w = rec.attrs[4];
         check(textIs(w.name, "wCommand") && w.cls == AttrClass::W && w.type == AttrType::U8, "wCommand is w, u8");
         check(w.hasEnum() && w.enumCount == 4 && w.writeHook.fn != nullptr,  "wCommand has four choices and a hook");
         char name[16];
@@ -134,11 +148,10 @@ int main() {
               "a short buffer is cut, terminated and reported");
         check(w.hasDefault() && w.defaultValue.u == SolenoidDevice::CMD_NONE, "wCommand defaults to None");
 
-        const Attr& r = rec.attrs[2];
-        check(rec.attrCount == 3,                                             "three attributes, no command result");
+        const Attr& r = rec.attrs[5];
         check(textIs(r.name, "rEnergized") && r.cls == AttrClass::R && r.type == AttrType::BOOL, "rEnergized is r, bool");
-        check(r.dir == AttrDir::NONE && r.writeHook.fn == nullptr && !r.hasEnum() && !r.isComputed(),
-              "r has no direction, no hook, NO_ENUM and a real member");
+        check(r.dir == AttrDir::NONE && r.writeHook.fn == nullptr && !r.hasEnum(),
+              "r has no direction, no hook and NO_ENUM");
         check(cnf.writeHook.fn == nullptr,                                    "cnfMaxOnTimeMs has no hook: it is only stored");
 
         printf("\n-- 3. wCommand is an ordinary w attribute; its hook runs the command --\n");
@@ -190,10 +203,11 @@ int main() {
 
         RecordingDescriber grandchild;
         rec.children[0]->describe(grandchild);
-        check(grandchild.attrCount == 3,                                    "walking into a child reaches its attributes");
+        check(grandchild.attrCount == 6,                                    "walking into a child reaches its attributes");
 
-        const Attr& in = rec.attrs[0];
-        const Attr& out = rec.attrs[1];
+        check(rec.attrCount == 5 && textIs(rec.attrs[0].name, "rState"), "the board serves its own state first");
+        const Attr& in = rec.attrs[3];
+        const Attr& out = rec.attrs[4];
         check(in.cls == AttrClass::IO && in.dir == AttrDir::IN && in.type == AttrType::F32, "ioSupplyVolts is io, IN, f32");
         check(out.cls == AttrClass::IO && out.dir == AttrDir::OUT && out.type == AttrType::U8, "ioFanPwm is io, OUT, u8");
         check(in.value == &board.supplyVolts_ && out.value == &board.fanPwm_, "io attributes point at the members");
@@ -233,7 +247,7 @@ int main() {
     }
 
     {
-        printf("\n-- 6. any class may carry a hook; r may be computed --\n");
+        printf("\n-- 6. any class may carry a hook --\n");
         uint32_t gearRatio = 0, gain = 0, plain = 0;
         Attr mount = attrMount(UDI_TEXT("cnfGear"), gearRatio).onWrite(countHook, &s_hookCalls);
         Attr setup = attrSetup(UDI_TEXT("cnfGain"), gain).onWrite(countHook, &s_hookCalls);
@@ -244,18 +258,6 @@ int main() {
         mount.writeHook.fn(mount, mount.writeHook.ctx);
         setup.writeHook.fn(setup, setup.writeHook.ctx);
         check(s_hookCalls == 2,                                                       "both hooks run with their context");
-
-        uint32_t source = 41;
-        Attr c = attrRComputed(UDI_TEXT("rAnswer"), AttrType::U32, readPlusOne, &source, UDI_TEXT("n"));
-        check(c.cls == AttrClass::R && c.type == AttrType::U32 && c.dir == AttrDir::NONE, "a computed attribute is r, of the given type");
-        check(c.value == nullptr && c.isComputed() && textIs(c.unit, "n"),           "it has no member, only a source");
-        check(c.readFn.fn(c.readFn.ctx).u == 42,                                     "its source computes the value on each read");
-        source = 99;
-        check(c.readFn.fn(c.readFn.ctx).u == 100,                                    "so it is never stale");
-        check(c.writeHook.fn == nullptr && !c.hasEnum() && !c.hasMin(),              "no hook, enum or limits unless chained");
-        Attr st = attrRComputed(UDI_TEXT("rState"), AttrType::U8, readPlusOne, &source)
-                      .enumOf(UDI_TEXT("Offline|Idle|Busy|Errored"));
-        check(st.enumCount == 4 && st.isComputed(),                                  "chained setters work on a computed attribute");
     }
 
     printf("\n%d passed, %d failed\n", s_passed, s_failed);

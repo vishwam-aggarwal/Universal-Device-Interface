@@ -9,10 +9,11 @@
 // or an LED standing in for one) is just a coil you switch on and off.
 //
 // What it demonstrates:
-//   * begin()/update() lifecycle and the OFFLINE/IDLE/BUSY/ERRORED
-//     precedence rule from IDevice.h.
-//   * The three tiers: DeviceState (shared), a local Status enum, a
-//     local Error enum.
+//   * All an implementer writes: begin()/update(), describeSelf() with
+//     its attributes, and a write hook where a write must act. State,
+//     status and error are members it assigns at each transition,
+//     following the OFFLINE > ERRORED > BUSY > IDLE precedence rule from
+//     IDevice.h; their text is a names list declared once.
 //   * Both kinds of reportError() use: a NON-sticky diagnostic
 //     (ERR_NOT_ONLINE -- the command is rejected and reported, but the
 //     device does not fault) and a STICKY fault (ERR_ON_TIME_EXCEEDED --
@@ -38,6 +39,8 @@ struct SolenoidPort {
 
 class SolenoidDevice : public IDevice {
 public:
+    // Codes, in the order of statusNames / errorNames below: a code is
+    // its position in the list.
     enum Status {
         STATUS_NONE      = 0,
         STATUS_ENERGIZED = 1,   // coil currently driven
@@ -49,11 +52,25 @@ public:
         ERR_ON_TIME_EXCEEDED = 2,  // coil held past maxOnTimeMs; force-released, LATCHED
     };
 
-    // name       -- what getDeviceName() (and the error sink's sourceName) reports
+    // Commands, as wCommand values. 0 is None, so a default write does
+    // nothing.
+    enum Command : uint8_t {
+        CMD_NONE        = 0,
+        CMD_ENERGIZE    = 1,
+        CMD_RELEASE     = 2,
+        CMD_CLEAR_FAULT = 3,
+    };
+
+    // name       -- the device's name (deviceName; the error sink's sourceName)
     // port       -- see SolenoidPort; both function pointers must be non-null
     // maxOnTimeMs-- longest the coil may stay energized before update() cuts it
     SolenoidDevice(const char* name, const SolenoidPort& port, uint32_t maxOnTimeMs)
-        : name_(name), port_(port), maxOnTimeMs_(maxOnTimeMs) {}
+        : port_(port), maxOnTimeMs_(maxOnTimeMs) {
+        deviceName  = name;
+        statusNames = UDI_TEXT("None|Energized");
+        errorNames  = UDI_TEXT("No error|Command rejected: begin() not called|"
+                               "Coil held past max on-time; force-released");
+    }
 
     // ------------------------------------------------------------
     // IDevice lifecycle
@@ -61,8 +78,9 @@ public:
     bool begin() override {
         port_.writeCoil(false, port_.ctx);   // known-safe state first
         energized_ = false;
-        error_     = ERR_NONE;
-        online_    = true;
+        rStatus    = STATUS_NONE;
+        rError     = ERR_NONE;
+        rState     = DeviceState::IDLE;      // last: online only once it is safe
         return true;
     }
 
@@ -73,8 +91,10 @@ public:
         if (elapsedMs(port_.nowMs(port_.ctx), energizedAtMs_) >= maxOnTimeMs_) {
             port_.writeCoil(false, port_.ctx);
             energized_ = false;
-            error_     = ERR_ON_TIME_EXCEEDED;      // sticky: latched until clearFault()
-            reportError("Solenoid", error_);
+            rStatus    = STATUS_NONE;
+            rError     = ERR_ON_TIME_EXCEEDED;   // sticky: latched until clearFault()
+            rState     = DeviceState::ERRORED;
+            reportError("Solenoid", rError);
         }
     }
 
@@ -82,15 +102,17 @@ public:
     // Commands
     // ------------------------------------------------------------
     bool energize() {
-        if (!online_) {
+        if (rState == DeviceState::OFFLINE) {
             reportError("Solenoid", ERR_NOT_ONLINE);   // diagnostic only, state untouched
             return false;
         }
-        if (error_ != ERR_NONE) return false;          // already reported when it latched
+        if (rError != ERR_NONE) return false;          // already reported when it latched
         if (energized_) return true;                   // idempotent
         energizedAtMs_ = port_.nowMs(port_.ctx);
         energized_ = true;
         port_.writeCoil(true, port_.ctx);
+        rStatus = STATUS_ENERGIZED;
+        rState  = DeviceState::BUSY;
         return true;
     }
 
@@ -98,80 +120,17 @@ public:
         if (!energized_) return;
         port_.writeCoil(false, port_.ctx);
         energized_ = false;
+        rStatus = STATUS_NONE;
+        rState  = DeviceState::IDLE;   // energized implies online and not faulted
     }
 
     // Recovery path out of ERRORED. Coil is already off by the time any
     // fault latches, so this only clears the latch.
     bool clearFault() {
-        if (!online_) return false;
-        error_ = ERR_NONE;
+        if (rState == DeviceState::OFFLINE) return false;
+        rError = ERR_NONE;
+        rState = energized_ ? DeviceState::BUSY : DeviceState::IDLE;
         return true;
-    }
-
-    // ------------------------------------------------------------
-    // IDevice introspection
-    // ------------------------------------------------------------
-    bool isOnline() const override { return online_; }
-
-    // Precedence: OFFLINE > ERRORED > BUSY > IDLE (see IDevice.h).
-    DeviceState getState() const override {
-        if (!online_)           return DeviceState::OFFLINE;
-        if (error_ != ERR_NONE) return DeviceState::ERRORED;
-        if (energized_)         return DeviceState::BUSY;
-        return DeviceState::IDLE;
-    }
-
-    uint32_t getStatus() const override { return energized_ ? STATUS_ENERGIZED : STATUS_NONE; }
-    uint32_t getError()  const override { return error_; }
-
-    const char* getStatusString(uint32_t status) const override {
-        switch (status) {
-            case STATUS_NONE:      return "None";
-            case STATUS_ENERGIZED: return "Energized";
-            default:               return "Unknown status";
-        }
-    }
-
-    const char* getErrorString(uint32_t err) const override {
-        switch (err) {
-            case ERR_NONE:             return "No error";
-            case ERR_NOT_ONLINE:       return "Command rejected: begin() not called";
-            case ERR_ON_TIME_EXCEEDED: return "Coil held past max on-time; force-released";
-            default:                   return "Unknown error";
-        }
-    }
-
-    const char* getDeviceName() const override { return name_; }
-
-    // ------------------------------------------------------------
-    // Device tree
-    // ------------------------------------------------------------
-    // Commands, as wCommand values. 0 is None, so a default write does
-    // nothing.
-    enum Command : uint8_t {
-        CMD_NONE        = 0,
-        CMD_ENERGIZE    = 1,
-        CMD_RELEASE     = 2,
-        CMD_CLEAR_FAULT = 3,
-    };
-
-    // cnfMaxOnTimeMs is a MOUNT attribute with no default and no hook: it
-    // is the coil's rating, so it must be given at boot, never changes
-    // while running, and is only stored. wCommand is an ordinary w
-    // attribute whose write hook runs energize()/release()/clearFault().
-    // The outcome shows the way every outcome does: rEnergized here, and
-    // rState/rError, which the framework lists for every device (a
-    // refused energize() reports its error through the sink as usual).
-    // wCommand keeps the last command written, which is not always what
-    // happened (the cutoff releases the coil on its own). THE TRUTH IS
-    // rEnergized: a w attribute is a request, an r attribute is the state.
-    void describe(IDescriber& d) override {
-        d.attr(attrMount(UDI_TEXT("cnfMaxOnTimeMs"), maxOnTimeMs_, UDI_TEXT("ms")).range(1, NO_MAX));
-        // Names in the order of enum Command: a value is its position.
-        d.attr(attrW(UDI_TEXT("wCommand"), command_)
-                   .enumOf(UDI_TEXT("None|Energize|Release|ClearFault")).def(CMD_NONE)
-                   .onWrite(onCommandWritten, this));
-        d.attr(attrR(UDI_TEXT("rEnergized"), energized_));
     }
 
     // ------------------------------------------------------------
@@ -185,11 +144,32 @@ public:
         return energized_ ? elapsedMs(port_.nowMs(port_.ctx), energizedAtMs_) : 0;
     }
 
+protected:
+    // ------------------------------------------------------------
+    // Device tree (after the rState/rStatus/rError IDevice lists)
+    // ------------------------------------------------------------
+    // cnfMaxOnTimeMs is a MOUNT attribute with no default and no hook: it
+    // is the coil's rating, so it must be given at boot, never changes
+    // while running, and is only stored. wCommand is an ordinary w
+    // attribute whose write hook runs energize()/release()/clearFault().
+    // The outcome shows in rEnergized and in rState/rError (a refused
+    // energize() reports its error through the sink as usual).
+    // wCommand keeps the last command written, which is not always what
+    // happened (the cutoff releases the coil on its own). THE TRUTH IS
+    // rEnergized: a w attribute is a request, an r attribute is the state.
+    void describeSelf(IDescriber& d) override {
+        d.attr(attrMount(UDI_TEXT("cnfMaxOnTimeMs"), maxOnTimeMs_, UDI_TEXT("ms")).range(1, NO_MAX));
+        // Names in the order of enum Command: a value is its position.
+        d.attr(attrW(UDI_TEXT("wCommand"), command_)
+                   .enumOf(UDI_TEXT("None|Energize|Release|ClearFault")).def(CMD_NONE)
+                   .onWrite(onCommandWritten, this));
+        d.attr(attrR(UDI_TEXT("rEnergized"), energized_));
+    }
+
 private:
     // Unsigned subtraction so a millis() wrap (every ~49.7 days) still
     // yields the right elapsed value.
     static uint32_t elapsedMs(uint32_t now, uint32_t since) { return now - since; }
-
 
     // Runs the command just written. A refusal needs no return path: it
     // is visible in rState/rError, and energize() reports before begin().
@@ -203,13 +183,10 @@ private:
         }
     }
 
-    const char*  name_;
     SolenoidPort port_;
     uint32_t     maxOnTimeMs_;
 
-    bool     online_        = false;
     bool     energized_     = false;
     uint32_t energizedAtMs_ = 0;
-    uint32_t error_         = ERR_NONE;
     uint8_t  command_       = CMD_NONE;      // backing store for wCommand
 };

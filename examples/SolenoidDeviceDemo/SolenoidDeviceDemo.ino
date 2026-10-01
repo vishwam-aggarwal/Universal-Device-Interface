@@ -52,12 +52,15 @@ SolenoidDevice latch("DemoLatch", port, MAX_ON_MS);
 IDevice* dev = &latch;
 
 static void printState(const char* what) {
+    char status[16], error[48];   // names come out of flash into these
+    dev->statusName(dev->getStatus(), status, sizeof(status));
+    dev->errorName(dev->getError(), error, sizeof(error));
     Serial.print(what);
     Serial.print(" -> ");
     Serial.print(dev->getDeviceName());
     Serial.print(" state=");   Serial.print(deviceStateToString(dev->getState()));
-    Serial.print(" status=");  Serial.print(dev->getStatusString(dev->getStatus()));
-    Serial.print(" error=");   Serial.print(dev->getErrorString(dev->getError()));
+    Serial.print(" status=");  Serial.print(status);
+    Serial.print(" error=");   Serial.print(error);
     Serial.print(" online=");  Serial.println(dev->isOnline() ? "yes" : "no");
 }
 

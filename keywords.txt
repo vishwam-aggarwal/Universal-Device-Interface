@@ -9,7 +9,6 @@ IDescriber	KEYWORD1
 Attr	KEYWORD1
 AttrNumber	KEYWORD1
 AttrText	KEYWORD1
-AttrReadFn	KEYWORD1
 AttrClass	KEYWORD1
 AttrDir	KEYWORD1
 AttrType	KEYWORD1
@@ -29,8 +28,9 @@ def	KEYWORD2
 enumOf	KEYWORD2
 onWrite	KEYWORD2
 enumName	KEYWORD2
-attrRComputed	KEYWORD2
-isComputed	KEYWORD2
+describeSelf	KEYWORD2
+statusName	KEYWORD2
+errorName	KEYWORD2
 attrW	KEYWORD2
 attrR	KEYWORD2
 attrIn	KEYWORD2
@@ -41,8 +41,6 @@ isOnline	KEYWORD2
 getState	KEYWORD2
 getStatus	KEYWORD2
 getError	KEYWORD2
-getStatusString	KEYWORD2
-getErrorString	KEYWORD2
 getDeviceName	KEYWORD2
 setGlobalErrorSink	KEYWORD2
 reportError	KEYWORD2

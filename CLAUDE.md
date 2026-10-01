@@ -63,17 +63,31 @@ a dependency here, ever.
   `enum class` has no implicit int conversion, so `Serial.print(getState())` (which several
   sibling sketches do today against the old `uint8_t getState()`) won't compile after the
   retrofit; this is the replacement.
-- `IDevice` pure virtuals: `begin()`, `isOnline()`, `getState()`, `getStatus()`,
-  `getError()`, `getStatusString()`, `getErrorString()`, `getDeviceName()`. One non-pure:
-  `update()` defaults to a no-op (same "optional default" idiom as
-  `IEndEffector::setPosition()`); a derived interface can make it mandatory again with
-  `void update() override = 0;`.
-- Also non-pure, added 2026-09-30 for Universal-Device-Framework: `end()` (teardown, the
-  mirror of `begin()`, default no-op) and `describe(IDescriber&)` (default lists nothing).
-  Both defaulted so no existing device changes.
+- **v0.6 (2026-10-01): the device WRITES its state; IDevice serves it.** The one pure
+  virtual is `begin()`. State, status, error and name are protected members the device
+  assigns — `DeviceState rState`, `uint32_t rStatus`, `uint32_t rError`,
+  `const char* deviceName` — and their text is a names list assigned once in the
+  constructor body, `const AttrText* statusNames` / `errorNames` (`UDI_TEXT("None|...")`;
+  a code is its position, so codes are 0..N-1 with no gaps). The device applies the
+  precedence rule itself whenever it assigns `rState`. Public non-virtual read-only views:
+  `getState()`, `getStatus()`, `getError()`, `isOnline()` (= `rState != OFFLINE`),
+  `getDeviceName()`, `statusName(code, dst, size)` / `errorName(...)`. The old pure
+  virtuals `isOnline/getState/getStatus/getError/getStatusString/getErrorString/
+  getDeviceName` are GONE: an implementer writes no getter and no string table.
+- `update()` and `end()` are optional (default no-op); a derived interface can make
+  `update()` mandatory again with `void update() override = 0;`.
+- **`describe(IDescriber&)` is public NON-virtual** (template method): it lists `rState`
+  (u8, enum `Offline|Idle|Busy|Errored`), `rStatus` and `rError` (u32, enumerated by
+  `statusNames`/`errorNames` when set) as R attributes pointing at the members, then calls
+  the protected `virtual describeSelf(IDescriber&)` (default lists nothing). Walkers,
+  UDF included, call `describe()` and get the three for every device with no code of
+  their own. `attrTypeOf(DeviceState*)` → U8 lives in IDevice.h for this.
 - `static setGlobalErrorSink(sink, userContext = nullptr)` + protected
   `reportError(layer, err) const` + two protected statics. `reportError()` is a pure
-  notification — it never mutates the device's state/error. Statics are defined in
+  notification — it never mutates the device's state/error. It copies the error's name
+  out of flash into a 48-byte stack buffer, so the sink signature is unchanged but
+  **`errorString` is valid only during the call** (a sink that keeps it must copy it);
+  no list / no such code → `"Unknown error"`. Statics are defined in
   `src/IDevice.cpp` (C++11 has no inline variables) — exactly why `IMotorDriver.cpp` exists
   in UMI today.
 
@@ -112,11 +126,24 @@ event, not a level). A `cnf` with no hook just stores; a `cnf` with one may reco
 dependents (a mount hook runs before `begin()`, so no hardware); a `w` with one acts.
 Arguments are attributes written first (CiA 402 pattern). No name is special: a device
 may use one enumerated `wCommand`, several `w` attributes, or both. Outcomes show in
-`rState`/`rStatus`/`rError`, which UDF lists for every device (reserved names), plus any
-`r` the device adds. Those three are computed attributes: `AttrReadFn {fn, ctx}` on
-`Attr`, made with `attrRComputed(name, type, fn, ctx)`, `value == nullptr`; only `r` can
-be computed. **UDF has not adopted this yet** (deferred by decision): its `attrLoad()`
-must call `readFn` and `DeviceTree` must list the three; until then UDF pins UDI v0.4.
+`rState`/`rStatus`/`rError`, which `IDevice::describe()` lists for every device (reserved
+names), plus any `r` the device adds. (v0.5's computed attributes, `AttrReadFn` /
+`attrRComputed`, existed only to serve those three and were removed in v0.6 once they
+became real members.) `enumOf(nullptr)` means no enumeration.
+
+**Sibling migration to v0.6 — deferred by decision (2026-10-01), one library at a time,
+UDF last.** Their desktop builds pin UDI submodules and keep working; their **Arduino
+builds share this folder and fail to compile until migrated**. Per library: delete every
+override of the removed getters; replace `online_`/`error_`/state logic with assignments
+to `rState`/`rStatus`/`rError` at each transition; assign `deviceName` and the names
+lists (renumber `Error`/`Status` codes 0..N-1 if they have gaps — ODrive's raw
+`AxisState` passthrough as status needs checking); rename `describe` overrides to
+`describeSelf`; replace `getErrorString(x)`/`getStatusString(x)` call sites with
+`errorName()`/`statusName()` into a buffer; any sink that stores `errorString` must copy.
+Delegating classes (UTI's `ServoGripperDriver` mirrors its motor's codes) must copy the
+wrapped device's values into their own members (e.g. in `update()`), since nothing is
+virtual any more. UDF additionally needs nothing for the three attributes (they come
+from `describe()`), only its own devices and tests migrated.
 
 **`src/IDescriber.h`** — the visitor `describe()` calls: `child(name, device)` and
 `attr(attr)`. Protected non-virtual destructor (never deleted through the interface; keeps
@@ -142,7 +169,7 @@ the global error sink printing to Serial, every state transition printed via
 legal 1 s pulse, then a deliberately-forgotten `release()` so the 2 s cutoff fires,
 `clearFault()`, repeat.
 
-`SolenoidDevice::describe()` lists `cnfMaxOnTimeMs` (mount, 1 .. NO_MAX, no default),
+`SolenoidDevice::describeSelf()` lists `cnfMaxOnTimeMs` (mount, 1 .. NO_MAX, no default),
 `wCommand` (None / Energize / Release / ClearFault, an ordinary `w` whose hook calls the
 methods) and `rEnergized`. A `w` attribute holds the last request; the `r` attribute is the
 truth (a cutoff releases the coil without touching `wCommand`).
@@ -158,10 +185,12 @@ limit, the cutoff (sticky, reported once, coil off, `energize()` refused silentl
 `ERRORED`), recovery, `millis()` wrap, and no-sink operation via `IDevice*`.
 
 **`tests/test_describe.cpp`** — `describe()`, `Attr` and `end()` through a recording
-describer: defaults, the solenoid's attributes with ranges, defaults and enums, every
+describer: every device's rState/rStatus/rError first (pointing at what it assigned, with
+its names lists), the solenoid's attributes with ranges, defaults and enums, every
 command through `wCommand` with the outcome read from state/error, a parent with two
 children and `io` in both directions, type deduction and exact limits, hooks on mount and
-setup attributes (and a setup with none), and a computed `r` attribute (58 checks).
+setup attributes (and a setup with none) (63 checks). `test_device_sink.cpp` (49 checks)
+also covers error names: an unlisted code, a device with no lists, a short buffer.
 
 ### Three-tier State / Status / Error — the core design decision
 
@@ -193,9 +222,10 @@ re-propose without new information:
 - Sink storage stays as static members on `IDevice` (not a standalone registry that
   non-device code could report through). Consequence: only `IDevice` subclasses can
   report; anything that wants the sink becomes a device.
-- `getStatus()`/`getStatusString()` stay pure virtual (no defaulted "no status" versions).
-- `isOnline()` stays a separate pure virtual rather than being derived from `getState()`.
-  Implementers must keep the two consistent: `OFFLINE` ⇔ `!isOnline()`.
+- ~~`getStatus()`/`getStatusString()` stay pure virtual~~ and ~~`isOnline()` stays a
+  separate pure virtual~~ — **reversed 2026-10-01 (v0.6)** by the user's decision that an
+  implementer writes only lifecycle, attributes and hooks: state/status/error are members
+  the device assigns, text is a names list, `isOnline()` is derived from `rState`.
 - No virtual inheritance from `IDevice`. A class that is two kinds of device composes.
 
 ### Conventions this repo sets for the whole family
@@ -355,7 +385,9 @@ and will drift. Recorded here so the intent survives between sessions.
   planner's specific cause, then MotionDevice's aggregated `ERR_PLAN_FAILED`). 62/62 checks.
   **The whole family is now on matching pins — no cross-repo work outstanding.**
 - **AVR RAM is the binding constraint for `IDevice` implementations** — found during that
-  bump, and it generalizes. `getErrorString()`/`getStatusString()` string tables live in
+  bump, and it generalizes. *(v0.6 removes the cause for migrated devices: error/status
+  text is now a `UDI_TEXT` names list in flash; SolenoidDeviceDemo went 751 → 621 B. The
+  rest of this note describes pre-v0.6 devices.)* `getErrorString()`/`getStatusString()` string tables live in
   `.data` (RAM) on AVR, and because those methods are **virtual** they are reachable from
   the vtable, so `--gc-sections` can never drop them even in a sketch that never calls them.
   `TrajectoryGroup`'s tables alone cost ~235 bytes and pushed `SimulatedArm3DOF` to 104% of

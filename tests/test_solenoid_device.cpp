@@ -36,6 +36,18 @@ static void fakeWriteCoil(bool energized, void* ctx) {
 }
 static uint32_t fakeNowMs(void* ctx) { return static_cast<FakePort*>(ctx)->nowMs; }
 
+// The names IDevice serves for a code, as an ordinary string.
+static const char* errorText(const IDevice& d, uint32_t code) {
+    static char buf[48];
+    d.errorName(code, buf, sizeof(buf));
+    return buf;
+}
+static const char* statusText(const IDevice& d, uint32_t code) {
+    static char buf[16];
+    d.statusName(code, buf, sizeof(buf));
+    return buf;
+}
+
 static SolenoidPort portFor(FakePort& p) {
     SolenoidPort port = { fakeWriteCoil, fakeNowMs, &p };
     return port;
@@ -49,7 +61,7 @@ struct SinkCapture {
     const char* layer       = nullptr;
     const char* sourceName  = nullptr;
     uint32_t    errorCode   = 0;
-    const char* errorString = nullptr;
+    char        errorString[48] = {};   // a copy: the text is valid only during the call
 };
 
 static void captureSink(const char* layer, const char* sourceName, uint32_t errorCode,
@@ -59,7 +71,7 @@ static void captureSink(const char* layer, const char* sourceName, uint32_t erro
     cap->layer       = layer;
     cap->sourceName  = sourceName;
     cap->errorCode   = errorCode;
-    cap->errorString = errorString;
+    snprintf(cap->errorString, sizeof(cap->errorString), "%s", errorString);
 }
 
 int main() {
@@ -77,7 +89,8 @@ int main() {
         check(!sol.energize(),                                            "energize() rejected while OFFLINE");
         check(cap.calls == 1 && cap.errorCode == SolenoidDevice::ERR_NOT_ONLINE, "ERR_NOT_ONLINE reported through the sink");
         check(streq(cap.layer, "Solenoid") && streq(cap.sourceName, "Latch"),  "tagged layer=Solenoid, sourceName=constructor name");
-        check(streq(cap.errorString, sol.getErrorString(SolenoidDevice::ERR_NOT_ONLINE)), "errorString matches getErrorString()");
+        check(streq(cap.errorString, errorText(sol, SolenoidDevice::ERR_NOT_ONLINE)) &&
+              streq(cap.errorString, "Command rejected: begin() not called"), "errorString is the name from errorNames");
         check(sol.getError() == SolenoidDevice::ERR_NONE,                 "non-sticky: getError() still ERR_NONE");
         check(sol.getState() == DeviceState::OFFLINE,                     "non-sticky: state still OFFLINE, not ERRORED");
         check(hw.coil == false && hw.writes == 0,                         "coil untouched by the rejected command");
@@ -94,8 +107,8 @@ int main() {
         check(sol.isOnline() && sol.getState() == DeviceState::IDLE,      "IDLE / isOnline() after begin()");
         check(hw.writes == 1 && hw.coil == false,                         "begin() writes the coil OFF once");
         check(sol.getStatus() == SolenoidDevice::STATUS_NONE,             "status STATUS_NONE");
-        check(streq(sol.getStatusString(sol.getStatus()), "None"),        "getStatusString(STATUS_NONE) == \"None\"");
-        check(sol.getError() == 0 && streq(sol.getErrorString(0), "No error"), "error 0 / \"No error\"");
+        check(streq(statusText(sol, sol.getStatus()), "None"),            "statusName(STATUS_NONE) == \"None\"");
+        check(sol.getError() == 0 && streq(errorText(sol, 0), "No error"), "error 0 / \"No error\"");
         check(sol.getOnTimeMs() == 0,                                     "on-time is 0 when not energized");
         check(cap.calls == 0,                                             "nothing reported during a clean begin()");
     }
@@ -112,7 +125,7 @@ int main() {
         check(hw.coil == true,                                            "coil driven ON");
         check(sol.getState() == DeviceState::BUSY,                        "state BUSY while energized");
         check(sol.getStatus() == SolenoidDevice::STATUS_ENERGIZED,        "status STATUS_ENERGIZED");
-        check(streq(sol.getStatusString(sol.getStatus()), "Energized"),   "getStatusString == \"Energized\"");
+        check(streq(statusText(sol, sol.getStatus()), "Energized"),       "statusName == \"Energized\"");
         check(sol.isEnergized(),                                          "isEnergized()");
 
         int writesBefore = hw.writes;
@@ -149,7 +162,7 @@ int main() {
         check(sol.getStatus() == SolenoidDevice::STATUS_NONE,             "status drops to STATUS_NONE (coil is off)");
         check(sol.isOnline(),                                             "ERRORED is still online");
         check(cap.calls == 1 && cap.errorCode == SolenoidDevice::ERR_ON_TIME_EXCEEDED, "fault reported exactly once");
-        check(streq(cap.errorString, sol.getErrorString(sol.getError())), "sink string == getErrorString(getError())");
+        check(streq(cap.errorString, errorText(sol, sol.getError())),     "sink string == errorName(getError())");
 
         hw.nowMs = 900; sol.update();
         check(cap.calls == 1,                                             "update() while ERRORED does not re-report");

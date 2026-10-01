@@ -36,9 +36,9 @@
 // both. An r attribute is never written from outside, so a hook on it
 // would never run.
 //
-// RESERVED NAMES: rState, rStatus and rError. The framework lists them
-// for every device (from getState(), getStatus() and getError()), so a
-// device never declares them itself.
+// RESERVED NAMES: rState, rStatus and rError. IDevice::describe() lists
+// them for every device, pointing at the members the device assigns, so
+// a device never declares them itself.
 //
 // Nothing here checks or applies a write: that belongs to the framework
 // built on top (Universal-Device-Framework), so every device gets the
@@ -158,17 +158,6 @@ struct AttrWriteHook {
     void* ctx;
 };
 
-// Optional source for an r attribute whose value is computed rather than
-// held in a member (the framework's rState is getState()). fn returns
-// the value in the attribute's own form, the same union member as its
-// limits. When fn is set, `value` is nullptr and every reader calls fn
-// instead. Only r attributes are computed: a writable attribute needs a
-// variable to store into.
-struct AttrReadFn {
-    AttrNumber (*fn)(void* ctx);
-    void* ctx;
-};
-
 struct Attr {
     // Which of minimum, maximum and defaultValue were given. Absent means NO_MIN, NO_MAX
     // or no default.
@@ -179,7 +168,7 @@ struct Attr {
     AttrType             type;
     AttrDir              dir;
     uint8_t              flags;
-    void*                value;      // the device's own variable, of type `type`; nullptr when computed
+    void*                value;      // the device's own variable, of type `type`
     const AttrText*      unit;       // "ms", "rad"; nullptr when unitless
     AttrNumber           minimum;
     AttrNumber           maximum;
@@ -187,7 +176,6 @@ struct Attr {
     const AttrText*      enumNames;     // "None|Energize|..."; nullptr: NO_ENUM
     uint8_t              enumCount;     // fields in enumNames
     AttrWriteHook        writeHook;     // {nullptr, nullptr} when the device needs none
-    AttrReadFn           readFn;        // {nullptr, nullptr} unless computed (attrRComputed)
 
     // --------------------------------------------------------------
     // Chained setters, so one describe() line declares one attribute:
@@ -215,8 +203,11 @@ struct Attr {
     // and the values are their positions, 0 to count-1, which is how a
     // wCommand or a state is numbered anyway and keeps the whole list one
     // flash string. The framework refuses a write outside 0..count-1.
+    // nullptr means no enumeration, so an optional list can be passed
+    // as it is.
     Attr& enumOf(const AttrText* names) {
         enumNames = names;
+        if (names == nullptr) { enumCount = 0; return *this; }
         uint16_t n = 1;
         for (size_t i = 0; attrTextChar(names, i) != '\0'; ++i) {
             if (attrTextChar(names, i) == '|') ++n;
@@ -236,7 +227,6 @@ struct Attr {
     bool hasDefault() const { return (flags & HAS_DEFAULT) != 0; }
     bool hasEnum() const    { return enumNames != nullptr; }
     bool inEnum(int32_t v) const { return hasEnum() && v >= 0 && v < enumCount; }
-    bool isComputed() const { return readFn.fn != nullptr; }
 
     // The name of enumeration value v into dst. False when v is not one
     // of the values or dst was too small.
@@ -318,23 +308,6 @@ inline Attr attrIn(const AttrText* name, T& value, const AttrText* unit = nullpt
 template <typename T>
 inline Attr attrOut(const AttrText* name, T& value, const AttrText* unit = nullptr) {
     return makeAttr(name, AttrClass::IO, AttrDir::OUT, value, unit);
-}
-
-// An r attribute computed by fn instead of read from a member (see
-// AttrReadFn). There is no variable to deduce the type from, so it is
-// given; fn must return the number in that type's union member.
-inline Attr attrRComputed(const AttrText* name, AttrType type, AttrNumber (*fn)(void* ctx),
-                          void* ctx, const AttrText* unit = nullptr) {
-    Attr a = Attr();
-    a.name      = name;
-    a.cls       = AttrClass::R;
-    a.type      = type;
-    a.dir       = AttrDir::NONE;
-    a.value     = nullptr;
-    a.unit      = unit;
-    a.readFn.fn  = fn;
-    a.readFn.ctx = ctx;
-    return a;
 }
 
 // For logging and the text debug print. enum class has no implicit
