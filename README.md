@@ -68,39 +68,41 @@ This library depends on nothing. Everything else depends on it.
 
 ## Features
 
-- `IDevice` — abstract base. **An implementer writes only** `begin()` (plus `update()` /
-  `end()` if needed), `describeSelf()` listing its attributes, and a write hook where a
-  write must act. State, status, error and the name are plain members it **assigns**
-  (`rState`, `rStatus`, `rError`, `deviceName`); their text is a names list declared once
-  (`statusNames`, `errorNames`). `IDevice` serves them as they are: as the `rState` /
-  `rStatus` / `rError` attributes of every device, and through read-only `getState()`,
-  `getStatus()`, `getError()`, `isOnline()`, `getDeviceName()`, `statusName()`,
-  `errorName()`.
-- `describe(IDescriber&)` + `Attr` — a device lists the devices it mounts and the
-  attributes it exposes, pointing at its own members. Every attribute carries its class
-  (`cnf` mount, `cnf` setup, `w`, `r`, `io`), type, unit, range (`NO_MIN` / `NO_MAX`),
-  default and, optionally, an enumeration of named choices. Nothing is stored; [Universal-Device-Framework](https://github.com/vishwam-aggarwal/Universal-Device-Framework)
-  builds its device tree on it. `describe()` always lists `rState`, `rStatus` and
-  `rError` first, then whatever the device's `describeSelf()` lists.
-- **Every attribute works the same way.** Any attribute may carry an optional write hook
-  (`.onWrite()`), which the framework runs after every accepted write: a `cnf` without one
-  just stores its value, a `cnf` with one can also change what depends on it, a `w` with
-  one turns the write into an action. No name is special, except that `rState`,
-  `rStatus` and `rError` are reserved: every device already has them.
-- `DeviceState` — one real, shared `enum class` (`OFFLINE` / `IDLE` / `BUSY` / `ERRORED`)
-  so generic code can hold a mixed list of `IDevice*` and branch on state without knowing
-  the concrete type.
-- `deviceStateToString()` — for logging (`enum class` values can't be `Serial.print()`ed
-  directly).
+- **Declare an attribute once; UDI generates the rest.** Each attribute is a `UdiAttr`
+  member declared with one line (`UDI_R`, `UDI_W`, `UDI_MOUNT`, `UDI_SETUP`, `UDI_IN`,
+  `UDI_OUT`) giving its type, name, unit, limits, default and enumeration. UDI generates the
+  member, its description in flash, the list the framework walks, and the wiring of its
+  callback. No describe code, no getters, no string tables.
+- **`UdiAttr`** — the device reads a value with `Get()` (whole numbers, enumerated values)
+  or `GetFloat()` (reals) and changes it with `UpdateValue()`; everything else comes from
+  methods (`GetType()`, `GetName()`, `GetUnit()`, `GetMin()`, `GetEnum()`,
+  `GetValueName()`, ...). Each attribute costs its value plus one pointer of RAM; its
+  name, unit, limits, default and enumeration live in flash.
+- **Callbacks the compiler enforces.** Every `w` attribute requires
+  `bool Set_wXyz(const UdiAttr& c)` — leave it out and the build fails. A `cnf` gets one
+  only when declared with `UDI_MOUNT_CB` / `UDI_SETUP_CB`, which then require it too. The
+  framework checks the rules, then calls the callback *instead of* storing: the device
+  stores the value itself if it accepts it.
+- **Enumerations as named numbers with descriptions**: `UDI_ENUM(enumMode,
+  (0, MODE_OFF, "Off"), (5, MODE_SLOW, "Slow"))`. Numbers are explicit (gaps allowed);
+  descriptions are what a front end shows in a dropdown. An attribute names its
+  enumeration once, in its declaration.
+- **`rState`** — the one attribute every device has, with the standard `enumDeviceState`
+  (`ST_OFFLINE` / `ST_IDLE` / `ST_BUSY` / `ST_ERRORED`), so generic code can hold a mixed
+  list of `IDevice*` and branch on `dev->rState.Get()`. Every other attribute (status,
+  error, ...) is the device's own choice.
+- **Names checked at compile time**: attributes carry their class as a prefix (`cnf`, `w`,
+  `r`, `io`), enumerations start with `enum`, types are fixed-width.
 - `GlobalErrorSink` + `IDevice::setGlobalErrorSink()` — **one** registration for every
-  device type in the whole family, not one per class.
-- `SolenoidDevice` — a shipped, tested sample implementation (non-motion on purpose) with
-  its hardware pin and clock injected, so the identical class runs on Arduino and desktop.
+  device type in the whole family. `reportError(rError)` sends the attribute's value and
+  its description.
+- `SolenoidDevice` — a shipped, tested sample device (non-motion on purpose) with its
+  hardware pin and clock injected, so the identical class runs on Arduino and desktop.
 - `examples/SolenoidDeviceDemo` — runs the sample on real hardware with the error sink
-  printing to Serial (verified on an Arduino UNO R4 WiFi).
+  printing to Serial.
 - Header-only apart from `IDevice.cpp`, which holds two static definitions.
-- Desktop CMake/CTest harness: `IDevice` sink/state tests against two test doubles, plus
-  the sample device against a fake port.
+- Desktop CMake/CTest harness, including tests that prove the compile-time rules reject
+  what they should.
 
 ---
 
@@ -132,17 +134,17 @@ target_include_directories(device PUBLIC extern/Universal-Device-Interface/src)
 
 ## Quick start
 
-Use the shipped sample device. One sink registration, one `IDevice*`, and the LED on your
-board stands in for a solenoid coil (this is `examples/SolenoidDeviceDemo`, condensed):
+Use the shipped sample device. One sink registration, and the LED on your board stands in
+for a solenoid coil (this is `examples/SolenoidDeviceDemo`, condensed):
 
 ```cpp
 #include <IDevice.h>
 #include <SolenoidDevice.h>
 
-void serialErrorSink(const char* layer, const char* source, uint32_t code,
-                     const char* str, void* /*ctx*/) {
-    Serial.print("[ERROR] "); Serial.print(layer); Serial.print("/"); Serial.print(source);
-    Serial.print(" code ");   Serial.print(code);  Serial.print(": "); Serial.println(str);
+void serialErrorSink(const char* typeName, const IDevice* /*source*/, uint32_t code,
+                     const char* text, void* /*ctx*/) {
+    Serial.print("[ERROR] "); Serial.print(typeName);
+    Serial.print(" code ");   Serial.print(code); Serial.print(": "); Serial.println(text);
 }
 
 // The only Arduino-specific glue: how to drive the coil, how to read the clock.
@@ -151,56 +153,53 @@ static void     coilWrite(bool on, void* ctx) { digitalWrite(*(const int*)ctx, o
 static uint32_t clockNowMs(void*)            { return millis(); }
 static const SolenoidPort port = { coilWrite, clockNowMs, (void*)&COIL_PIN };
 
-SolenoidDevice latch("DemoLatch", port, /*maxOnTimeMs=*/2000);
-IDevice* dev = &latch;                       // generic code only needs this
+SolenoidDevice latch(port);                  // hardware only; config is an attribute
 
 void setup() {
     Serial.begin(115200);
     pinMode(COIL_PIN, OUTPUT);
     IDevice::setGlobalErrorSink(serialErrorSink);   // ONCE, for every device type
-    dev->begin();
+    latch.cnfMaxOnTimeMs.UpdateValue(2000);         // mount config, before begin()
+    latch.begin();
 }
 
 void loop() {
-    latch.energize();                        // BUSY / STATUS_ENERGIZED
+    latch.energize();                        // rState Busy
     // ... forget to release() ...
-    dev->update();                           // at 2 s: coil cut, ERR_ON_TIME_EXCEEDED
-                                             // reaches serialErrorSink, state ERRORED
-    if (dev->getState() == DeviceState::ERRORED) {
-        Serial.println(deviceStateToString(dev->getState()));
-        latch.clearFault();                  // back to IDLE
-    }
+    latch.update();                          // at 2 s: coil cut, the on-time error
+                                             // reaches serialErrorSink, rState Errored
+    if (latch.rState.Get() == ST_ERRORED) latch.clearFault();   // back to Idle
     delay(10);
 }
 ```
 
-What that prints on an UNO R4 WiFi (built-in LED as the coil):
+Expected output of the full demo (one cycle):
 
 ```
-energize() -> DemoLatch state=BUSY status=Energized error=No error online=yes
-release() after 1 s -> DemoLatch state=IDLE status=None error=No error online=yes
-energize() and never release -> DemoLatch state=BUSY status=Energized error=No error online=yes
-[ERROR] Solenoid/DemoLatch code 2: Coil held past max on-time; force-released
-after the cutoff -> DemoLatch state=ERRORED status=None error=Coil held past max on-time; force-released online=yes
-clearFault() -> DemoLatch state=IDLE status=None error=No error online=yes
+Energize -> state=Busy error=No error energized=yes
+Release after 1 s -> state=Idle error=No error energized=no
+Energize and never release -> state=Busy error=No error energized=yes
+[ERROR] Solenoid code 2: Coil held past max on-time; force-released
+after the cutoff -> state=Errored error=Coil held past max on-time; force-released energized=no
+ClearFault -> state=Idle error=No error energized=no
 ```
 
 ---
 
 ## Sample device: `SolenoidDevice`
 
-`src/SolenoidDevice.h` is the reference implementation of an `IDevice` and is deliberately
-**not** a motor, encoder, or anything else from the motion stack: it's a coil you switch on
-and off, with a real-world safety rule (most solenoids are intermittent-duty — hold the coil
-past its rated on-time and it overheats).
+`src/SolenoidDevice.h` is the reference device and is deliberately **not** a motor, encoder,
+or anything else from the motion stack: it's a coil you switch on and off, with a real-world
+safety rule (most solenoids are intermittent-duty — hold the coil past its rated on-time and
+it overheats).
 
 | | |
 |---|---|
-| Lifecycle | `begin()` drives the coil to a known-safe OFF state and goes `IDLE`. `update()` is the protective cutoff — call it every `loop()`. |
-| Commands | `energize()`, `release()`, `clearFault()`. |
-| State | `OFFLINE` before `begin()`; `BUSY` while energized; `ERRORED` after a cutoff; `IDLE` otherwise. |
-| Status | `STATUS_NONE`, `STATUS_ENERGIZED`. |
-| Errors | `ERR_NOT_ONLINE` — a command before `begin()`: **reported but not latched** (device stays `OFFLINE`). `ERR_ON_TIME_EXCEEDED` — coil held past `maxOnTimeMs`: **force-released and latched** until `clearFault()`. Both kinds of `reportError()` use, side by side. |
+| Attributes | `cnfMaxOnTimeMs` (mount u32, ms, 1 .. no max, **no default: must be configured**), `wCommand` (w u8, `enumSolenoidCommand`: None / Energize / Release / Clear fault), `rError` (r u8, `enumSolenoidError`), `rEnergized` (r bool), plus `rState`. |
+| Lifecycle | `begin()` drives the coil to a known-safe OFF state; without `cnfMaxOnTimeMs` it fails and stays Offline, otherwise it goes Idle. `update()` is the protective cutoff — call it every `loop()`. |
+| Commands | Through `wCommand` (`Set_wCommand()`), or the same actions as C++ methods: `energize()`, `release()`, `clearFault()`. |
+| State | Offline before `begin()`; Busy while energized; Errored after a cutoff; Idle otherwise. |
+| Errors | `ERR_NOT_ONLINE` — a command before `begin()`: **reported but not latched**. `ERR_ON_TIME_EXCEEDED` — coil held past `cnfMaxOnTimeMs`: **force-released and latched** until Clear fault. Both kinds of `reportError()` use, side by side. |
 | Platform independence | The class never touches a pin or a clock. Both come in through `SolenoidPort { writeCoil, nowMs, ctx }` — `digitalWrite()`/`millis()` on Arduino, a fake with a hand-advanced clock in `tests/test_solenoid_device.cpp`. Same class, unmodified, on both. |
 
 `examples/SolenoidDeviceDemo` exercises every row of that table on hardware, with the sink
@@ -214,182 +213,175 @@ directly.
 
 `src/SolenoidDevice.h` is the template — copy its shape:
 
-1. Derive from `IDevice`. Declare local `enum Status { STATUS_NONE = 0, ... }` and
-   `enum Error { ERR_NONE = 0, ... }`, and in the constructor body assign
-   `deviceName = name;` and the names lists in the same order,
-   `statusNames = UDI_TEXT("None|...")`, `errorNames = UDI_TEXT("No error|...")`: a code
-   is its position in its list.
-2. Implement `begin()`: bring hardware to a known-safe state, then set
-   `rState = DeviceState::IDLE`. That is the only required override.
-3. **Assign `rState`, `rStatus` and `rError` wherever they change**, following the
-   precedence rule `OFFLINE` > `ERRORED` > `BUSY` > `IDLE`. Never write a getter: what
-   you assign is what is served.
-4. Override `update()` only if the device needs periodic servicing.
-5. Call `reportError("<Layer>", code)` wherever something goes wrong. Decide separately
-   whether that fault latches (assign `rError` and `rState = ERRORED`) —
-   `reportError()` itself never changes anything.
-6. Keep hardware I/O out of the interface header: inject it (as `SolenoidDevice` does with
-   `SolenoidPort`) or put it in a separate Arduino-only backend `.cpp`.
-7. Override `describeSelf()` to list the devices you own (`d.child("name", member)`)
-   and the values you expose, one line each, e.g.
-   `d.attr(attrSetup(UDI_TEXT("cnfVMax"), vMax_, UDI_TEXT("rad/s")).range(0.0f, 10.0f).def(2.0f))`.
-   Helpers: `attrMount`, `attrSetup`, `attrW`, `attrR`, `attrIn`, `attrOut`; chain `.range()`,
-   `.def()`, `.enumOf(UDI_TEXT("None|Energize|..."))`, `.onWrite()`. Every name, unit and
-   enumeration is written `UDI_TEXT("...")`, which keeps it in flash on AVR instead of RAM;
-   an enumeration's values are the positions of its names. Names carry their class as a prefix (`cnf`, `w`,
-   `r`, `io`) and never contain `/` or `.`. Any attribute may run a hook when it is
-   written (`.onWrite(fn, ctx)`): a `w` that triggers an action, a `cnf` that recomputes
-   something derived from it, or none at all for a value that is only stored. A device
-   with several verbs can take them through one enumerated `w` (`SolenoidDevice`'s
-   `wCommand`), through one `w` per action, or both. Don't declare `rState`, `rStatus` or
-   `rError`: `describe()` lists them for you.
-   Override `end()` if the device must leave hardware safe on teardown.
+```cpp
+class Heater : public IDevice {
+public:
+    UDI_DEVICE(Heater, "Heater")                         // first: the type name
+
+    UDI_ENUM(enumHeaterError,
+        (0, ERR_NONE,     "No error"),
+        (1, ERR_OVERTEMP, "Over temperature"))
+
+    //           type     name          unit     min     max     default     enum
+    UDI_MOUNT   (uint8_t, cnfPin,       NO_UNIT, NO_MIN, 53,     NO_DEFAULT, NO_ENUM)
+    UDI_SETUP_CB(float,   cnfMaxTempC,  "degC",  0,      150,    80,         NO_ENUM)
+    UDI_W       (float,   wSetpointC,   "degC",  0,      150,    0,          NO_ENUM)
+    UDI_R       (float,   rTempC,       "degC",  NO_MIN, NO_MAX, 0,          NO_ENUM)
+    UDI_R       (uint8_t, rError,       NO_UNIT, NO_MIN, NO_MAX, ERR_NONE,   enumHeaterError)
+
+    explicit Heater(HeaterPort port) : port_(port) {}    // injected hardware only
+
+    bool begin() override { ...; rState.UpdateValue(ST_IDLE); return true; }
+    void update() override { rTempC.UpdateValue(port_.read()); ... }
+
+    bool Set_wSetpointC(const UdiAttr& c) {               // required: it is a w
+        if (c.GetFloat() > cnfMaxTempC.GetFloat()) return false;   // refuse
+        wSetpointC.UpdateValue(c);                        // accept: store it yourself
+        return true;
+    }
+    bool Set_cnfMaxTempC(const UdiAttr& c) { cnfMaxTempC.UpdateValue(c); ...; return true; }
+private:
+    HeaterPort port_;
+};
+```
+
+1. `UDI_DEVICE(Self, "TypeName")` first in the class body.
+2. One line per attribute. The name carries the class prefix; the type is fixed-width
+   (`bool`, `u/int8..32_t`, `float`, `double`); `NO_MIN` / `NO_MAX` / `NO_DEFAULT` /
+   `NO_UNIT` / `NO_ENUM` where a property doesn't apply. A mount attribute without a default
+   must be configured before `begin()`.
+3. `begin()` brings the hardware to a known-safe state and sets `rState` to `ST_IDLE` (or
+   returns false and stays `ST_OFFLINE`). Update `rState` and your own attributes wherever
+   they change, with `UpdateValue()`, following `ST_OFFLINE` > `ST_ERRORED` > `ST_BUSY` >
+   `ST_IDLE`.
+4. A `Set_` for every `w` and every `_CB` cnf: store with `UpdateValue()` and return true
+   to accept, return false to refuse.
+5. `reportError(rError)` when something goes wrong (or `reportError(rError, ERR_X)` for a
+   diagnostic you don't store). It never changes anything: whether a fault latches is your
+   separate `UpdateValue()`.
+6. Devices you own as members: `UDI_CHILD(member)`. Deriving from another declared device:
+   `UDI_DEVICE_EXTENDS(Self, Base, "TypeName")`.
+7. Keep hardware I/O injected (as `SolenoidDevice` does with `SolenoidPort`) or in an
+   Arduino-only backend `.cpp`. Override `update()` / `end()` only if needed.
 
 ---
 
 ## Architecture
 
+### `UdiAttr` and the declarations
+
+```cpp
+class UdiAttr {
+public:
+    int32_t Get() const;              // whole number: bool, integers, enumerated values
+    double  GetFloat() const;         // real (a 4-byte float on AVR)
+    template <typename V> void UpdateValue(V v);   // converted to the attribute's type
+    void UpdateValue(const UdiAttr& other);
+    bool GetValueName(char* dst, size_t size) const;   // current value's description
+
+    AttrType GetType() const;  AttrClass GetClass() const;  AttrDir GetDir() const;
+    const AttrText* GetName() const;  const AttrText* GetUnit() const;
+    bool HasMin() const;  UdiAttr GetMin() const;   // likewise Max, Default
+    const AttrEnum* GetEnum() const;  bool HasCallback() const;
+    Attr Describe(void* owner);       // the record the framework works with
+};
+```
+
+Each declaration macro emits the member, a `UdiAttrInfo` in flash (`PROGMEM` on AVR,
+built entirely at compile time), a trampoline that calls `Set_<name>` (for `w` and `_CB`),
+and one entry in a list the class builds for itself: each declaration adds an overload of a
+counter function, the next finds the highest with `decltype`, and the generated
+`describeSelf()` walks them in declaration order. Plain C++11; no registry, no heap, no
+start-up code.
+
 ### `IDevice`
 
 ```cpp
-enum class DeviceState : uint8_t { OFFLINE = 0, IDLE = 1, BUSY = 2, ERRORED = 3 };
-inline const char* deviceStateToString(DeviceState state);
+UDI_ENUM(enumDeviceState, (0, ST_OFFLINE, "Offline"), (1, ST_IDLE, "Idle"),
+                          (2, ST_BUSY, "Busy"),       (3, ST_ERRORED, "Errored"))
 
 class IDevice {
 public:
-    virtual ~IDevice() = default;
+    virtual bool begin() = 0;                 // the only required override
+    virtual void update() {}                  // optional
+    virtual void end() {}                     // optional teardown
 
-    virtual bool begin() = 0;                      // the only required override
-    virtual void update() {}                       // optional; default no-op
-    virtual void end() {}                          // optional teardown; default no-op
+    void describe(IDescriber& d);             // rState, then everything declared
+    virtual const char* udiTypeName() const;  // from UDI_DEVICE
 
-    void describe(IDescriber& d);                  // rState, rStatus, rError, then describeSelf()
-
-    DeviceState getState() const;                  // read-only views of the members below
-    uint32_t    getStatus() const;
-    uint32_t    getError() const;
-    bool        isOnline() const;                  // rState != OFFLINE
-    const char* getDeviceName() const;
-    bool statusName(uint32_t code, char* dst, size_t size) const;   // name from statusNames
-    bool errorName(uint32_t code, char* dst, size_t size) const;    // name from errorNames
+    UdiAttr rState;                           // u8, enumDeviceState, starts ST_OFFLINE
 
     static void setGlobalErrorSink(GlobalErrorSink sink, void* userContext = nullptr);
 
 protected:
-    DeviceState     rState      = DeviceState::OFFLINE;   // the device assigns these;
-    uint32_t        rStatus     = 0;                       // they ARE the served values
-    uint32_t        rError      = 0;
-    const char*     deviceName  = "";
-    const AttrText* statusNames = nullptr;                 // UDI_TEXT("None|...")
-    const AttrText* errorNames  = nullptr;                 // UDI_TEXT("No error|...")
-
-    virtual void describeSelf(IDescriber& d) {}            // the device's own attributes
-    void reportError(const char* layer, uint32_t err) const;
+    virtual void describeSelf(IDescriber& d); // generated by UDI_DEVICE
+    void reportError(const UdiAttr& error) const;            // its current value
+    void reportError(const UdiAttr& error, V code) const;    // a value it does not store
 };
 ```
 
-`update()` is optional: devices that read/act live on every call (encoders)
-or have a differently-shaped real-time entry point (`MotionDevice::tick(float t)`) simply
-don't override it. A derived *interface* that wants it mandatory re-declares it as
-`void update() override = 0;`.
+Devices have no instance name of their own: a parent names its children (`UDI_CHILD(left)`
+is "left") and the application names the root.
 
-### State / Status / Error — three tiers
+### The record: `Attr`
 
-A moving motor has **state** `BUSY` and **status** `STATUS_MOVING`. Those are two different
-tiers, and older per-backend `enum State { ST_IDLE, ST_SERVO_ON, ST_ERRORED }` designs
-conflated them.
-
-| Tier | Type | Scope | Why |
-|---|---|---|---|
-| **State** | `DeviceState` (real shared enum) | universal | `OFFLINE/IDLE/BUSY/ERRORED` is a small, closed set that means the same thing for *any* device. Defining it once lets generic code hold a bare `IDevice*` and branch meaningfully. |
-| **Status** | per-class codes in `rStatus`, `uint32_t` on the wire, named by `statusNames` | device-specific | What the device is *doing* right now. Fundamentally different per hardware family, so it's convention-only, `0 = STATUS_NONE`. |
-| **Error** | per-class codes in `rError`, `uint32_t` on the wire, named by `errorNames` | device-specific | A motor's faults have nothing in common with an encoder's. Same convention, `0 = ERR_NONE`. |
-
-C++ can't "inherit" one enum's members into another, which is exactly why Status and Error
-stay per-class while State is the one thing worth making a real shared type.
+What `describe()` hands a walker, one per attribute: name, class, type, direction, flags,
+`AttrNumber* value` (the attribute's value in its own form), unit, minimum, maximum,
+default, `const AttrEnum* enumDef`, and the write hook. The framework checks a write from
+outside against class, type, enumeration and range, then calls the hook **instead of
+storing** when there is one (every `w`, every `_CB` cnf), and stores otherwise.
 
 ### The global error sink
 
 ```cpp
-typedef void (*GlobalErrorSink)(const char* layer, const char* sourceName,
+typedef void (*GlobalErrorSink)(const char* typeName, const IDevice* source,
                                 uint32_t errorCode, const char* errorString,
                                 void* userContext);
 ```
 
-Installed **once** with `IDevice::setGlobalErrorSink(sink, userContext)`. Every device in
-every library reports through the protected `reportError(layer, err)` helper, which calls
-the sink with `(layer, deviceName, err, <err's name from errorNames>, userContext)`. The
-name is copied out of flash into a buffer on the reporting device's stack, so
-**`errorString` is valid only during the call**: a sink that keeps it must copy it. A code
-with no name arrives as `"Unknown error"`.
+Installed **once** with `IDevice::setGlobalErrorSink(sink, userContext)`. `typeName` comes
+from `UDI_DEVICE`; `source` is the device, which a tree-aware sink maps to its path.
+`errorString` is the value's description from the attribute's enumeration (or
+`"Unknown error"`), copied out of flash into a buffer on the reporting device's stack, so
+it is **valid only during the call**: a sink that keeps it must copy it.
 
-- `layer` is the call-site string (`"MotorDriver"`, `"MotionDevice"`, `"Encoder"`, ...) —
-  that plus `sourceName` is how one printer function tells reports apart.
-- `reportError()` is a **pure notification**. It never touches the device's own state or
-  error. Whether a fault is sticky (latched into `ERRORED`) is the device's separate
-  decision — so a device can also report a one-off diagnostic without faulting.
-- Before this library, `IMotorDriver` and `MotionDevice` each had their own copy of this
-  machinery and an application had to call `setGlobalErrorSink()` once per class with the
-  same printer. Now it's one call. (The old per-class calls still compile — they resolve to
-  the inherited static — they're just redundant.)
+- `reportError()` is a **pure notification**. It never changes any attribute. Whether a
+  fault is sticky is the device's separate decision — so a device can also report a
+  one-off diagnostic without faulting.
 
 ### What is deliberately not in `IDevice`
 
 `enable()` / `disable()` / `clearErrors()` / `servoOn()` / `servoOff()`. This is where the
 domains genuinely diverge: motors "servo on", tools and orchestrators "enable", encoders and
-trajectory planners have no on/off concept at all. Forcing one name would mean renaming
-`servoOn()`/`servoOff()` across every motor backend, calibration wizard, and example sketch
-for no gain. Each interface keeps its own vocabulary for this; `IDevice` only unifies the
-parts that were already identical.
+trajectory planners have no on/off concept at all. Each device keeps its own vocabulary,
+typically as values of a `wCommand`.
 
 ---
 
 ## Conventions for implementers
 
-These are what the desktop test's `MockSolenoid` / `MockCurrentSensor` follow, and what
-every library in the family follows when it derives from `IDevice`.
+**State precedence.** When more than one could apply: `ST_OFFLINE` > `ST_ERRORED` >
+`ST_BUSY` > `ST_IDLE`. Not online → offline regardless of any latched error; online with a
+latched error → errored regardless of activity.
 
-**State precedence.** When more than one could apply: `OFFLINE` > `ERRORED` > `BUSY` >
-`IDLE`. Not online → `OFFLINE` regardless of any latched error; online with a latched error
-→ `ERRORED` regardless of activity. The device applies it whenever it assigns `rState`;
-`isOnline()` is derived (`rState != OFFLINE`), so it always agrees.
+**Never fake busy.** A backend with no real way to know it's busy (an open-loop RC servo
+with no move-completion feedback) stays `ST_IDLE` while active-and-not-faulted. A backend
+with real feedback (ODrive, `MotionDevice` mid-move) reports `ST_BUSY`. Same honesty
+principle as `IGripper::isObjectDetected()` and `IEncoder::isValid()`.
 
-**Naming.** `enum Status { STATUS_NONE = 0, STATUS_... }` and
-`enum Error { ERR_NONE = 0, ERR_... }`, both local to the concrete class, numbered 0..N-1
-with no gaps, in the same order as `statusNames` / `errorNames`. Use the `STATUS_`
-prefix, not `ST_` — `ST_IDLE` sitting next to `DeviceState::IDLE` is confusing.
-
-**Never fake `BUSY`.** A backend with no real way to know it's busy (an open-loop RC servo
-with no move-completion feedback) reports `IDLE` while active-and-not-faulted. A backend with
-real feedback (ODrive, `MotionDevice` mid-move) reports `BUSY`. Same honesty principle as
-`IGripper::isObjectDetected()` and `IEncoder::isValid()`.
-
-**Mapping guidance for existing designs:**
-
-| Device situation | `getState()` | `getStatus()` |
-|---|---|---|
-| Constructed, `begin()` not yet called / failed | `OFFLINE` | `STATUS_NONE` |
-| Motor online, servo off | `IDLE` | `STATUS_NONE` |
-| Motor servo on, holding position, no move feedback | `IDLE` | `STATUS_SERVO_ON` |
-| Motor with feedback, mid-move | `BUSY` | `STATUS_MOVING` |
-| `MotionDevice` executing a planned move | `BUSY` | `STATUS_MOVING` |
-| Encoder online (a pure sensor has no busy concept) | `IDLE` | `STATUS_NONE` |
-| Any latched fault | `ERRORED` | whatever is still true, usually `STATUS_NONE` |
+**Configuration lives in its attribute.** The constructor takes only injected hardware;
+mount values are written before `begin()` (by the framework, or by a sketch with
+`UpdateValue()`), and `begin()` fails if a required one is missing.
 
 **Static-initialization caveat.** Install the sink at the top of `setup()`. A device
 declared as a global object runs its constructor *before* `setup()`, so anything reported
-from a constructor is silently lost. If a constructor can fail in a way the user needs to
-know about, pair the one-shot report with a queryable flag (e.g. `calibrationTableRejected()`
-in Universal-Motor-Interface).
+from a constructor is silently lost.
 
-**No virtual inheritance.** `IDevice` is meant to be a single, plain base. A class that
-needs to be two kinds of device at once (a driver that is both a motor and an encoder)
-should *compose* — hold the other as a member — not multiply-inherit. Diamonds are not
-supported.
+**No virtual inheritance.** A class that needs to be two kinds of device at once should
+*compose* — hold the other as a member and `UDI_CHILD` it — not multiply-inherit.
 
-**Interface headers never include Arduino.** `IDevice.h`, `IMotorDriver.h`, `IEncoder.h`,
-... only ever include `<stdint.h>` and each other. Only concrete backend `.h`/`.cpp` files
-may touch `Arduino.h`, `Wire.h`, `Servo.h`, etc.
+**Interface headers never include Arduino.** Only concrete backend `.h`/`.cpp` files may
+touch `Arduino.h`, `Wire.h`, `Servo.h`, etc.
 
 ---
 
@@ -425,28 +417,28 @@ ctest --test-dir build --output-on-failure
 On Windows with MSVC add `--config Debug` to the build step and `-C Debug` to `ctest` (or
 run `.vscode/build-debug.bat`, which configures with NMake from a VS developer shell).
 
-- `tests/test_device_sink.cpp` defines two non-motion test doubles (`MockSolenoid`,
-  `MockCurrentSensor`) and covers: `reportError()` dispatch (layer / name / code / string /
-  userContext all arrive intact), one sink registration serving both device types, uninstall
-  via `setGlobalErrorSink(nullptr)`, the full `OFFLINE → IDLE → BUSY → ERRORED → IDLE`
-  lifecycle observed through a bare `IDevice*`, and error names (an unlisted code, a device
-  with no lists, a short buffer).
-- `tests/test_solenoid_device.cpp` runs the shipped `SolenoidDevice` against a fake
-  `SolenoidPort` with a hand-advanced clock: rejected-before-`begin()` (reported, not
+- `tests/test_device_sink.cpp` — two non-motion test doubles declared with the macros
+  (`MockSolenoid`, `MockCurrentSensor`): `reportError()` dispatch (type name / source / code
+  / text / userContext), one sink registration serving both device types, uninstall,
+  `rState` through a bare `IDevice*`, unlisted codes, a device with no declarations.
+- `tests/test_solenoid_device.cpp` — the shipped `SolenoidDevice` against a fake
+  `SolenoidPort` with a hand-advanced clock, commanded through `wCommand`'s callback the way
+  the framework does: missing mount config, rejected-before-`begin()` (reported, not
   latched), the protective cutoff (latched, reported once, coil forced off), recovery,
-  `millis()` wrap-around, and operation with no sink installed.
-- `tests/test_describe.cpp` walks `describe()` with a recording describer: every device
-  lists `rState` / `rStatus` / `rError` first, pointing at what it assigned (with its names
-  lists as enumerations), `SolenoidDevice`'s own three attributes point at its members with their
-  ranges, defaults and enumerations, `wCommand`'s hook runs each command with the outcome
-  visible in the device's state and error, a parent lists its children and `io`
-  attributes, `end()` dispatches, types and limits are deduced and stored exactly, mount
-  and setup attributes carry hooks (or none).
+  `millis()` wrap-around, no sink installed.
+- `tests/test_describe.cpp` — what the declarations generate: `rState` on every device, the
+  records in declaration order with types, units, limits, defaults and enumerations (gaps
+  and negatives), callbacks accepting and refusing, `_CB` vs plain cnf, `UDI_CHILD`,
+  `UDI_DEVICE_EXTENDS`, and `UdiAttr`'s conversions and metadata.
+- `tests/compile_fail/` — sources that must **not** compile: a `w` without `Set_`, a `_CB`
+  without `Set_`, a wrong prefix, an enumeration not named `enum...`, a non-fixed-width
+  type, a redeclared `rState`. Each passes only when the compiler's message names the rule.
+  (Locally with NMake, run `ctest` from a VS developer shell so it can rebuild them.)
 
 **On hardware**: `arduino-cli compile --fqbn arduino:renesas_uno:unor4wifi -u -p <port>
 examples/SolenoidDeviceDemo`, then open a 115200-baud monitor. The UNO R4 WiFi's native USB
 doesn't reset when the monitor connects, so press RESET to see the `setup()` lines (the
-pre-`begin()` rejection); the `loop()` cycle repeats every ~6 s regardless.
+pre-`begin()` lines); the `loop()` cycle repeats every ~6 s regardless.
 
 ---
 

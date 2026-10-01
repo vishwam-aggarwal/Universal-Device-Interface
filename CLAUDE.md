@@ -31,8 +31,9 @@ a dependency here, ever.
   --test-dir build --output-on-failure` (Windows/MSVC: add `--config Debug` / `-C Debug`).
   On this machine there is no `g++`; use `.vscode/build-debug.bat` (VsDevCmd + NMake, same
   script as Universal-Motion-Interface) then `ctest --test-dir build -C Debug
-  --output-on-failure`. Builds `src/IDevice.cpp` into a `device` library and runs
-  `tests/test_device_sink.cpp`.
+  --output-on-failure` **from a VS developer shell** (the compile-fail tests rebuild
+  targets with `nmake`). Builds `src/IDevice.cpp` into a `device` library, runs the three
+  test programs and the six compile-fail checks.
 - **Arduino**: `arduino-cli compile --fqbn <fqbn> --warnings all examples/SolenoidDeviceDemo`
   — compile-verified warning-free on `arduino:renesas_uno:unor4wifi` and `arduino:avr:uno`.
   This library must be on the Arduino libraries path (it already lives under
@@ -55,142 +56,105 @@ a dependency here, ever.
 
 ## Architecture
 
-**`src/IDevice.h`** — the whole design. Read the header comments; they're the spec.
+**v0.6 (2026-10-01): attributes are `UdiAttr` objects, declared once.** The design, in
+the user's words: an implementer writes only lifecycle overrides and the callbacks for
+every `w` (and the `cnf`s that want one); the framework handles each attribute's
+structure, description and reporting; all communication is in `UdiAttr` space. Read the
+header comments of `UdiDeclare.h`, `UdiAttr.h`, `IDevice.h`, `Attr.h` — they're the spec.
 
-- `enum class DeviceState : uint8_t { OFFLINE, IDLE, BUSY, ERRORED }` — the ONE real,
-  shared state enum. Precedence when several apply: `OFFLINE` > `ERRORED` > `BUSY` > `IDLE`.
-- `deviceStateToString(DeviceState)` — inline helper for logging. Exists because an
-  `enum class` has no implicit int conversion, so `Serial.print(getState())` (which several
-  sibling sketches do today against the old `uint8_t getState()`) won't compile after the
-  retrofit; this is the replacement.
-- **v0.6 (2026-10-01): the device WRITES its state; IDevice serves it.** The one pure
-  virtual is `begin()`. State, status, error and name are protected members the device
-  assigns — `DeviceState rState`, `uint32_t rStatus`, `uint32_t rError`,
-  `const char* deviceName` — and their text is a names list assigned once in the
-  constructor body, `const AttrText* statusNames` / `errorNames` (`UDI_TEXT("None|...")`;
-  a code is its position, so codes are 0..N-1 with no gaps). The device applies the
-  precedence rule itself whenever it assigns `rState`. Public non-virtual read-only views:
-  `getState()`, `getStatus()`, `getError()`, `isOnline()` (= `rState != OFFLINE`),
-  `getDeviceName()`, `statusName(code, dst, size)` / `errorName(...)`. The old pure
-  virtuals `isOnline/getState/getStatus/getError/getStatusString/getErrorString/
-  getDeviceName` are GONE: an implementer writes no getter and no string table.
-- `update()` and `end()` are optional (default no-op); a derived interface can make
-  `update()` mandatory again with `void update() override = 0;`.
-- **`describe(IDescriber&)` is public NON-virtual** (template method): it lists `rState`
-  (u8, enum `Offline|Idle|Busy|Errored`), `rStatus` and `rError` (u32, enumerated by
-  `statusNames`/`errorNames` when set) as R attributes pointing at the members, then calls
-  the protected `virtual describeSelf(IDescriber&)` (default lists nothing). Walkers,
-  UDF included, call `describe()` and get the three for every device with no code of
-  their own. `attrTypeOf(DeviceState*)` → U8 lives in IDevice.h for this.
-- `static setGlobalErrorSink(sink, userContext = nullptr)` + protected
-  `reportError(layer, err) const` + two protected statics. `reportError()` is a pure
-  notification — it never mutates the device's state/error. It copies the error's name
-  out of flash into a 48-byte stack buffer, so the sink signature is unchanged but
-  **`errorString` is valid only during the call** (a sink that keeps it must copy it);
-  no list / no such code → `"Unknown error"`. Statics are defined in
-  `src/IDevice.cpp` (C++11 has no inline variables) — exactly why `IMotorDriver.cpp` exists
-  in UMI today.
+**`src/UdiDeclare.h`** — the declaration macros.
+- `UDI_DEVICE(Self, "TypeName")` first in the class body: `typedef Self UdiSelf`, friend
+  `udi::Each`, the base of a **class-scope counter** (`static udi::Num<0>
+  udiCount_(udi::Rank<0>)`; each item adds `udiCount_(Rank<k+1>)` returning `Num<k+1>` and
+  the next reads the highest through `decltype` — plain C++11 overload ranking, verified on
+  MSVC, gcc 7 (arm) and avr-gcc 7.3), `udiTypeName()` and a generated `describeSelf()`
+  that walks items 0..N-1 in declaration order. `UDI_DEVICE_EXTENDS(Self, Base, "T")` calls
+  `Base::describeSelf()` first. Max `UDI_MAX_ITEMS` (64) items per device.
+- `UDI_R / UDI_W / UDI_MOUNT / UDI_MOUNT_CB / UDI_SETUP / UDI_SETUP_CB / UDI_IN / UDI_OUT
+  (type, name, unit, min, max, default, enum)`. Each emits `static const UdiAttrInfo*
+  udiInfo_<name>()` returning a function-local `static constexpr ... PROGMEM` info (so it is
+  constant-initialized — a non-constant initializer is a compile error, never a silent
+  start-up copy; confirmed in `.text` on AVR with no init guards), the member
+  `UdiAttr name{udiInfo_name()}`, and an item for the list. `UDI_W` and `_CB` also emit
+  `udiSet_<name>` calling `Set_<name>(UdiAttr(info, value))` — compiled unconditionally,
+  so **a missing `Set_` is a compile error**. Prefix (`cnf`/`w`/`r`/`io`) and the reserved
+  `rState` are `static_assert`ed with constexpr string helpers.
+- `NO_MIN`/`NO_MAX` (`AttrNoLimit`), `NO_DEFAULT` (`AttrNoDefault`), `NO_UNIT` (`""`),
+  `NO_ENUM` (`udiEnum_NO_ENUM()` → nullptr). Limits/defaults go through constexpr
+  `udi::numberOf((T*)0, v)` into the union member of T.
+- `UDI_ENUM(enumName, (number, NAME, "description"), ...)` — up to 32 entries (generated
+  FOR_EACH with EXPAND wrappers for MSVC's traditional preprocessor), class or namespace
+  scope: a plain `enum` (NAME is just a number — the user explicitly accepted that one
+  enum's constant can be used on another attribute) and `static inline udiEnum_<name>()`
+  returning a flash `AttrEnum {count, entries[{value, text}]}`. Name must start with
+  `enum`. Numbers explicit, gaps and negatives allowed.
+- `UDI_CHILD(member)` — child named `#member`.
 
-**`src/GlobalErrorSink.h`** — UMI's typedef moved verbatim, plus `#include <stdint.h>`
-(the original used `uint32_t` without including it and only compiled because
-`IMotorDriver.h` had already pulled it in). Same typedef, so no printer function anywhere
-changes.
+**`src/UdiAttr.h`** — one non-template class: `AttrNumber value_` + `const UdiAttrInfo*`
+(16 B desktop, 6 B AVR). `Get()` → int32 (bool/ints/enum; real truncated), `GetFloat()` →
+double; `UpdateValue()` template for integers/enums plus exact overloads for
+bool/float/double/`const UdiAttr&`, converting to the attribute's own type (integers cut
+to width) — the device's own write: no rules, no callback. Metadata getters read the info
+with `udiReadFlash` (`memcpy_P` on AVR). `Describe(owner)` builds the `Attr` record. Known
+limit: a u32 above 2^31 reads negative through `Get()` (agreed: add an unsigned getter
+only when a real attribute needs it).
 
-**`src/Attr.h`** (v2, 2026-09-30) — `Attr`: one exposed value that POINTS AT the device's
-own member (no copy, no registry), plus its rules, all built on the stack in `describe()`
-so they cost no RAM between calls. Classes `MOUNT` (cnf, set once before `begin()`),
-`SETUP` (cnf, runtime but not while BUSY), `W`, `R`, `IO` (with `IN`/`OUT` seen from the
-device). `minimum`/`maximum`/`defaultValue` are an `AttrNumber` union in the attribute's
-own kind of number (flags say which are set; absent = `NO_MIN`/`NO_MAX`/no default; a
-mount attribute with no default must be configured). `enumNames` is one `'|'`-separated
-text (nullptr = NO_ENUM) and the values are the names' positions, 0..`enumCount`-1.
-**All text -- `name`, `unit`, `enumNames` -- is `const AttrText*`, written `UDI_TEXT("...")`
-and read only through `attrTextEquals()`/`attrTextField()`/`attrTextCopy()`**: on AVR it is a
-`PSTR` in flash (via avr-libc's `<avr/pgmspace.h>`, not Arduino), elsewhere a plain literal.
-Why: as plain literals, one motor's attribute and command names cost ~320 B of an Uno's 2 KB
-RAM (measured 2026-09-30; `describe()` is virtual, so they can never be dropped), which put
-UMI's SimulatedMotor example at 2032/2048 B. `AttrText` is an incomplete type on purpose, so a
-flash pointer can't be printed or `strcmp`'d by accident. `AttrType` is deduced by the
-`attrMount/attrSetup/attrW/attrR/attrIn/attrOut` helpers, so type and pointer can't
-disagree; an unsupported type (C++ enum, `long`, `char`) doesn't compile on purpose.
-Chained `.range(lo, hi)` (either may be `NO_MIN`/`NO_MAX`), `.def(v)`, `.enumOf(UDI_TEXT("A|B"))`,
-`.onWrite(fn, ctx)`. Fields are `minimum`/`maximum`, never `min`/`max`: Arduino.h defines
-those as macros. CHECKING AND APPLYING WRITES IS THE FRAMEWORK'S JOB, NOT THIS LIBRARY'S:
-UDF refuses out-of-range and non-enum values (never clamps).
+**`src/Attr.h`** — the record and its vocabulary. `Attr.value` is `AttrNumber*` (always
+the attribute's own union member). Enumerations are `const AttrEnum* enumDef` (helpers
+`attrEnumCount/attrEnumEntry/attrEnumFind/attrEnumHas`, `Attr::inEnum/enumName`); the
+v0.4 `'|'` enum text and the chained `attrR(...).range()...` builders are gone. **Write
+contract:** the framework checks class, type, enum, range, then calls `writeHook.fn(attr,
+value, ctx)` **instead of storing** when set (every `w`, every `_CB`), else stores; false =
+refused by the device. All text is `AttrText` (flash on AVR, `UDI_TEXT`). Fields are
+`minimum`/`maximum`, never `min`/`max` (Arduino macros).
 
-**Every attribute works the same way** (decided 2026-10-01, replacing the v0.4
-`DeviceCommand.h` convention, which was deleted along with `CommandResult` and
-`rCommandResult`). Any attribute of any class may carry an optional write hook; the
-framework runs it after every accepted write, even an unchanged value (a write is an
-event, not a level). A `cnf` with no hook just stores; a `cnf` with one may recompute
-dependents (a mount hook runs before `begin()`, so no hardware); a `w` with one acts.
-Arguments are attributes written first (CiA 402 pattern). No name is special: a device
-may use one enumerated `wCommand`, several `w` attributes, or both. Outcomes show in
-`rState`/`rStatus`/`rError`, which `IDevice::describe()` lists for every device (reserved
-names), plus any `r` the device adds. (v0.5's computed attributes, `AttrReadFn` /
-`attrRComputed`, existed only to serve those three and were removed in v0.6 once they
-became real members.) `enumOf(nullptr)` means no enumeration.
-
-**Sibling migration to v0.6 — deferred by decision (2026-10-01), one library at a time,
-UDF last.** Their desktop builds pin UDI submodules and keep working; their **Arduino
-builds share this folder and fail to compile until migrated**. Per library: delete every
-override of the removed getters; replace `online_`/`error_`/state logic with assignments
-to `rState`/`rStatus`/`rError` at each transition; assign `deviceName` and the names
-lists (renumber `Error`/`Status` codes 0..N-1 if they have gaps — ODrive's raw
-`AxisState` passthrough as status needs checking); rename `describe` overrides to
-`describeSelf`; replace `getErrorString(x)`/`getStatusString(x)` call sites with
-`errorName()`/`statusName()` into a buffer; any sink that stores `errorString` must copy.
-Delegating classes (UTI's `ServoGripperDriver` mirrors its motor's codes) must copy the
-wrapped device's values into their own members (e.g. in `update()`), since nothing is
-virtual any more. UDF additionally needs nothing for the three attributes (they come
-from `describe()`), only its own devices and tests migrated.
+**`src/IDevice.h`** — `UDI_ENUM(enumDeviceState, (0, ST_OFFLINE, "Offline"),
+(1, ST_IDLE, ...), (2, ST_BUSY, ...), (3, ST_ERRORED, ...))` replaces `enum class
+DeviceState` and `deviceStateToString`. `begin()` is the only pure virtual; `update()`,
+`end()` optional. Public `UdiAttr rState` (u8, standard enum, default `ST_OFFLINE`) — the
+ONLY mandatory attribute (user's decision; rStatus/rError are ordinary optional
+attributes). Non-virtual `describe()` lists `rState`, then `describeSelf()`. **No instance
+name** (decision: names come from the tree — `UDI_CHILD` names children, the app names the
+root); no `getState/getStatus/getError/isOnline/getDeviceName`. Sink:
+`(typeName, const IDevice* source, code, text, ctx)`; `reportError(attr)` /
+`reportError(attr, code)` — pure notifications, text copied from the attribute's enum into
+a 48-byte stack buffer (valid only during the call), `"Unknown error"` when unlisted.
+Statics in `src/IDevice.cpp`.
 
 **`src/IDescriber.h`** — the visitor `describe()` calls: `child(name, device)` and
-`attr(attr)`. Protected non-virtual destructor (never deleted through the interface; keeps
-the deleting destructor out of AVR builds), so concrete describers should be `final`.
-Rules in the header: list owned/referenced children, unique names without `/` or `.`,
-same order every call, no side effects.
+`attr(attr)`. Protected non-virtual destructor, so concrete describers should be `final`.
 
-**`src/SolenoidDevice.h`** — the shipped sample `IDevice` implementation, deliberately
-non-motion (a coil with an intermittent-duty on-time limit). It is the template for any
-new device: local `Status`/`Error` enums, the state precedence rule, `update()` as a
-protective cutoff, and **both** `reportError()` usages side by side — `ERR_NOT_ONLINE` is
-reported but not latched (a diagnostic), `ERR_ON_TIME_EXCEEDED` is force-released and
-latched until `clearFault()`. Hardware I/O and time are injected through
-`SolenoidPort { writeCoil, nowMs, ctx }` so the identical class runs against
-`digitalWrite()`/`millis()` on Arduino and a fake port on desktop — that injection, not an
-`#ifdef ARDUINO`, is how this library stays platform-agnostic while still shipping
-something that runs on a board. Elapsed time is unsigned `now - since` so a `millis()`
-wrap is handled (tested).
+**`src/SolenoidDevice.h`** — the template device. Constructor takes only the injected
+`SolenoidPort`; `cnfMaxOnTimeMs` (mount, 1..NO_MAX, NO_DEFAULT) must be set before
+`begin()`, which otherwise fails and stays offline. `wCommand` (`enumSolenoidCommand`)
+with required `Set_wCommand`, `rError` (`enumSolenoidError`), `rEnergized`. Both
+`reportError` uses side by side: `reportError(rError, ERR_NOT_ONLINE)` (diagnostic, not
+stored) and `reportError(rError)` after latching `ERR_ON_TIME_EXCEEDED`. Elapsed time is
+unsigned `now - since` (millis() wrap tested).
 
-**`examples/SolenoidDeviceDemo`** — the sample on real hardware, `LED_BUILTIN` as the coil,
-the global error sink printing to Serial, every state transition printed via
-`deviceStateToString()`. One cycle: command-before-`begin()` rejection (setup only),
-legal 1 s pulse, then a deliberately-forgotten `release()` so the 2 s cutoff fires,
-`clearFault()`, repeat.
+**`examples/SolenoidDeviceDemo`** — config through the attribute, commands through
+`Set_wCommand` as the framework would, state and error printed with `GetValueName()`,
+`F()` strings. Uno: 7586 B flash / 310 B RAM (v0.5: 5116 / 751).
 
-`SolenoidDevice::describeSelf()` lists `cnfMaxOnTimeMs` (mount, 1 .. NO_MAX, no default),
-`wCommand` (None / Energize / Release / ClearFault, an ordinary `w` whose hook calls the
-methods) and `rEnergized`. A `w` attribute holds the last request; the `r` attribute is the
-truth (a cutoff releases the coil without touching `wCommand`).
+**Tests** — `test_device_sink.cpp` (37 checks: sink dispatch, two device types, uninstall,
+rState lifecycle, unlisted codes, an undeclared device), `test_solenoid_device.cpp` (48:
+config, rejection, cutoff, recovery, wrap, no sink — commanded through the hook),
+`test_describe.cpp` (69: generated records, enum gaps/negatives, callbacks accept/refuse,
+`_CB` vs plain, children, EXTENDS, `UdiAttr` conversions), and `tests/compile_fail/` (6
+sources that must not compile; each CTest passes only when the compiler output names the
+rule; regexes verified against MSVC and gcc). **Locally with NMake, run `ctest` from a VS
+developer shell** (the compile-fail tests rebuild targets and need `nmake` on PATH).
 
-**`tests/test_device_sink.cpp`** — two deliberately non-motion test doubles defined in the
-test itself (`MockSolenoid`: has a real busy concept; `MockCurrentSensor`: pure sensor,
-honestly never `BUSY`). Covers sink dispatch field-by-field, one registration serving both
-device types, uninstall, and the full lifecycle observed through a bare `IDevice*`.
-
-**`tests/test_solenoid_device.cpp`** — `SolenoidDevice` against a fake `SolenoidPort` with a
-hand-advanced clock (51 checks): pre-`begin()` rejection, clean `begin()`, pulse within the
-limit, the cutoff (sticky, reported once, coil off, `energize()` refused silently while
-`ERRORED`), recovery, `millis()` wrap, and no-sink operation via `IDevice*`.
-
-**`tests/test_describe.cpp`** — `describe()`, `Attr` and `end()` through a recording
-describer: every device's rState/rStatus/rError first (pointing at what it assigned, with
-its names lists), the solenoid's attributes with ranges, defaults and enums, every
-command through `wCommand` with the outcome read from state/error, a parent with two
-children and `io` in both directions, type deduction and exact limits, hooks on mount and
-setup attributes (and a setup with none) (63 checks). `test_device_sink.cpp` (49 checks)
-also covers error names: an unlisted code, a device with no lists, a short buffer.
+**Deferred migration (by decision, 2026-10-01): UDI first, then the siblings, UDF last.**
+Their desktop builds pin older UDI submodules and keep working; **their Arduino builds share
+this folder and fail until migrated.** Per library: declare every exposed value with the
+macros (`UDI_DEVICE` first), replace getter overrides and state logic with
+`UpdateValue()` on `rState` and the device's own attributes, enums become `UDI_ENUM
+(enumXxx, ...)`, `DeviceState::X` → `ST_X`, constructor config → mount attributes,
+`describe` overrides → declarations/`UDI_CHILD`, sinks take the new signature and copy
+`errorString`. UDF additionally: `Attr.value` is `AttrNumber*`, the write path calls the
+hook instead of storing (new "refused by device" result), enumerations are `AttrEnum`
+tables (ITEM/TreePrinter/ValueText), tree-based names, the new sink.
 
 ### Three-tier State / Status / Error — the core design decision
 
@@ -201,10 +165,10 @@ machine state with fine-grained, device-specific detail. `IDevice` splits them:
 - **State** is a real shared type because `OFFLINE/IDLE/BUSY/ERRORED` is a small, closed
   set that means the same thing for any device. That's what lets generic code hold a mixed
   `IDevice*` list and branch on state without knowing the concrete type.
-- **Status** and **Error** stay per-class local enums (`uint32_t` on the wire, `0 =
-  STATUS_NONE` / `0 = ERR_NONE` by convention only) because C++ can't inherit enum members
-  and the values are genuinely unrelated across hardware families. Status is new but
-  modeled identically to the Error pattern every backend already uses.
+- **Status** and **Error** stay per-device: since v0.6 they are ordinary, optional
+  attributes (`rStatus`, `rError`) with the device's own `UDI_ENUM` (`0 = STATUS_NONE` /
+  `0 = ERR_NONE` by convention only), because the values are genuinely unrelated across
+  hardware families. State is the one mandatory attribute (`rState`, `enumDeviceState`).
 - A backend with no real way to know it's busy (open-loop RC servo) reports `IDLE` while
   active-and-not-faulted rather than a faked `BUSY` — the "never fake it" principle from
   `IGripper::isObjectDetected()` / `IEncoder::isValid()`.
@@ -224,14 +188,16 @@ re-propose without new information:
   report; anything that wants the sink becomes a device.
 - ~~`getStatus()`/`getStatusString()` stay pure virtual~~ and ~~`isOnline()` stays a
   separate pure virtual~~ — **reversed 2026-10-01 (v0.6)** by the user's decision that an
-  implementer writes only lifecycle, attributes and hooks: state/status/error are members
-  the device assigns, text is a names list, `isOnline()` is derived from `rState`.
+  implementer writes only lifecycle and callbacks: every getter is gone, state is the
+  mandatory `rState` attribute, status/error are optional attributes with `UDI_ENUM`
+  descriptions, and devices have no instance name (the tree names them).
 - No virtual inheritance from `IDevice`. A class that is two kinds of device composes.
 
 ### Conventions this repo sets for the whole family
 
 Documented in README "Conventions for implementers" — the retrofits follow them:
-`STATUS_` prefix (not `ST_`, which reads wrong next to `DeviceState::IDLE`); state
+`ST_` is the state prefix (`enumDeviceState`), so status codes use `STATUS_`; attribute
+prefixes `cnf`/`w`/`r`/`io` and `enum...` names (compile-checked since v0.6); state
 precedence; `reportError()` never mutates state; install the sink at the top of `setup()`
 because global-object constructors run first and their reports are lost (pair
 constructor-time failures with a queryable flag — UMI's `calibrationTableRejected()`
@@ -386,7 +352,9 @@ and will drift. Recorded here so the intent survives between sessions.
   **The whole family is now on matching pins — no cross-repo work outstanding.**
 - **AVR RAM is the binding constraint for `IDevice` implementations** — found during that
   bump, and it generalizes. *(v0.6 removes the cause for migrated devices: error/status
-  text is now a `UDI_TEXT` names list in flash; SolenoidDeviceDemo went 751 → 621 B. The
+  text is a `UDI_ENUM` description table in flash and every attribute's info is in flash;
+  SolenoidDeviceDemo went 751 → 310 B (with `F()` strings in the sketch). Each `UdiAttr`
+  costs 6 B of RAM. The
   rest of this note describes pre-v0.6 devices.)* `getErrorString()`/`getStatusString()` string tables live in
   `.data` (RAM) on AVR, and because those methods are **virtual** they are reachable from
   the vtable, so `--gc-sections` can never drop them even in a sketch that never calls them.

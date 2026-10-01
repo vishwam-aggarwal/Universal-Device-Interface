@@ -1,5 +1,5 @@
-// SolenoidDeviceDemo -- the library's sample IDevice implementation running
-// on real hardware, with the global error sink printing to Serial.
+// SolenoidDeviceDemo -- the library's sample device running on real
+// hardware, with the global error sink printing to Serial.
 //
 // Wiring: none required. The built-in LED stands in for the solenoid coil
 // (LED_BUILTIN -- pin 13 on an UNO R4 WiFi, and on most boards). To drive a
@@ -7,15 +7,19 @@
 // transistor/MOSFET/relay module -- never a coil directly off an I/O pin.
 //
 // What you'll see on the Serial monitor (115200), once per ~6 s cycle:
-//   1. A command issued before begin() -> rejected, printed via the sink,
-//      but the device stays OFFLINE (a non-sticky diagnostic).
-//   2. begin() -> IDLE.
-//   3. energize() for 1 s, release() -> BUSY then IDLE, LED on then off,
+//   1. begin() before cnfMaxOnTimeMs is configured -> fails, stays Offline.
+//   2. A command issued before begin() -> rejected, printed via the sink,
+//      but nothing latches (a non-sticky diagnostic).
+//   3. cnfMaxOnTimeMs set, begin() -> Idle.
+//   4. Energize for 1 s, Release -> Busy then Idle, LED on then off,
 //      nothing reported (within the 2 s max on-time).
-//   4. energize() and deliberately "forget" to release -> at 2 s update()
-//      cuts the coil, the LED goes off by itself, ERR_ON_TIME_EXCEEDED
-//      arrives through the sink, state is ERRORED.
-//   5. clearFault() -> IDLE, and the cycle repeats.
+//   5. Energize and deliberately "forget" to release -> at 2 s update()
+//      cuts the coil, the LED goes off by itself, the on-time error
+//      arrives through the sink, state is Errored.
+//   6. ClearFault -> Idle, and the cycle repeats.
+//
+// Commands go through the device's own Set_wCommand() here, exactly as
+// the framework calls it when wCommand is written from outside.
 //
 // The exact same SolenoidDevice class, unmodified, runs under
 // tests/test_solenoid_device.cpp on the desktop against a fake port --
@@ -29,12 +33,12 @@ static const uint32_t MAX_ON_MS     = 2000;   // rated continuous on-time
 static const uint32_t SAFE_PULSE_MS = 1000;   // a legal pulse, under the limit
 
 // ---- The global error sink: one function, one registration, every device ----
-void serialErrorSink(const char* layer, const char* sourceName, uint32_t code,
+void serialErrorSink(const char* typeName, const IDevice* /*source*/, uint32_t code,
                      const char* errorString, void* /*userContext*/) {
-    Serial.print("[ERROR] ");
-    Serial.print(layer);  Serial.print("/"); Serial.print(sourceName);
-    Serial.print(" code "); Serial.print(code);
-    Serial.print(": ");   Serial.println(errorString);
+    Serial.print(F("[ERROR] "));
+    Serial.print(typeName);
+    Serial.print(F(" code ")); Serial.print(code);
+    Serial.print(F(": "));     Serial.println(errorString);
 }
 
 // ---- Hardware port: the only Arduino-specific glue ----
@@ -45,30 +49,28 @@ static uint32_t clockNowMs(void* /*ctx*/) { return millis(); }
 
 static const SolenoidPort port = { coilWrite, clockNowMs, const_cast<int*>(&COIL_PIN) };
 
-SolenoidDevice latch("DemoLatch", port, MAX_ON_MS);
+SolenoidDevice latch(port);
 
-// Everything below only ever talks to `dev` as an IDevice* where it can --
-// that's what a generic supervisor/logger would hold.
-IDevice* dev = &latch;
+static void command(uint8_t c) {
+    latch.wCommand.UpdateValue(c);       // stand-in for a write from outside:
+    latch.Set_wCommand(latch.wCommand);  // the framework calls Set_ with the value
+}
 
-static void printState(const char* what) {
-    char status[16], error[48];   // names come out of flash into these
-    dev->statusName(dev->getStatus(), status, sizeof(status));
-    dev->errorName(dev->getError(), error, sizeof(error));
+static void printState(const __FlashStringHelper* what) {
+    char state[12], error[48];           // descriptions come out of flash into these
+    latch.rState.GetValueName(state, sizeof(state));
+    latch.rError.GetValueName(error, sizeof(error));
     Serial.print(what);
-    Serial.print(" -> ");
-    Serial.print(dev->getDeviceName());
-    Serial.print(" state=");   Serial.print(deviceStateToString(dev->getState()));
-    Serial.print(" status=");  Serial.print(status);
-    Serial.print(" error=");   Serial.print(error);
-    Serial.print(" online=");  Serial.println(dev->isOnline() ? "yes" : "no");
+    Serial.print(F(" -> state="));  Serial.print(state);
+    Serial.print(F(" error="));     Serial.print(error);
+    Serial.print(F(" energized=")); Serial.println(latch.rEnergized.Get() ? F("yes") : F("no"));
 }
 
 // Service update() while waiting, the way a real loop() would.
 static void waitServicing(uint32_t ms) {
     uint32_t t0 = millis();
     while (millis() - t0 < ms) {
-        dev->update();
+        latch.update();
         delay(10);
     }
 }
@@ -81,37 +83,41 @@ void setup() {
     IDevice::setGlobalErrorSink(serialErrorSink);   // ONCE, at the top of setup()
 
     Serial.println();
-    Serial.println("=== Universal-Device-Interface: SolenoidDeviceDemo ===");
-    printState("constructed");
+    Serial.println(F("=== Universal-Device-Interface: SolenoidDeviceDemo ==="));
+    printState(F("constructed"));
 
-    // 1. Command before begin(): rejected + reported, but NOT a fault.
-    latch.energize();
-    printState("energize() before begin()");
+    // 1. Mount configuration missing: begin() refuses.
+    Serial.println(latch.begin() ? F("begin() without config: ok?!") : F("begin() without config: refused"));
 
-    // 2. Bring it up.
-    dev->begin();
-    printState("begin()");
+    // 2. Command before begin(): rejected + reported, but NOT a fault.
+    command(SolenoidDevice::CMD_ENERGIZE);
+    printState(F("Energize before begin()"));
+
+    // 3. Configure, then bring it up.
+    latch.cnfMaxOnTimeMs.UpdateValue(MAX_ON_MS);
+    latch.begin();
+    printState(F("begin()"));
 }
 
 void loop() {
-    // 3. A legal pulse.
-    latch.energize();
-    printState("energize()");
+    // 4. A legal pulse.
+    command(SolenoidDevice::CMD_ENERGIZE);
+    printState(F("Energize"));
     waitServicing(SAFE_PULSE_MS);
-    latch.release();
-    printState("release() after 1 s");
+    command(SolenoidDevice::CMD_RELEASE);
+    printState(F("Release after 1 s"));
     waitServicing(500);
 
-    // 4. Forget to release: the device protects the coil itself.
-    latch.energize();
-    printState("energize() and never release");
+    // 5. Forget to release: the device protects the coil itself.
+    command(SolenoidDevice::CMD_ENERGIZE);
+    printState(F("Energize and never release"));
     waitServicing(MAX_ON_MS + 200);        // cutoff fires at MAX_ON_MS inside update()
-    printState("after the cutoff");
+    printState(F("after the cutoff"));
 
-    // 5. Recover.
-    latch.clearFault();
-    printState("clearFault()");
+    // 6. Recover.
+    command(SolenoidDevice::CMD_CLEAR_FAULT);
+    printState(F("ClearFault"));
 
-    Serial.println("--- cycle done, repeating in 2 s ---");
+    Serial.println(F("--- cycle done, repeating in 2 s ---"));
     waitServicing(2000);
 }

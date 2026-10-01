@@ -3,9 +3,9 @@
 #include "IDevice.h"
 
 // ==================================================================
-// Desktop test for IDevice: the unified global error sink and DeviceState
-// behavior, exercised through two deliberately NON-motion test doubles so
-// nothing here reads as "part of the motion stack".
+// Desktop test for IDevice: the unified global error sink and rState,
+// exercised through two deliberately NON-motion test doubles so nothing
+// here reads as "part of the motion stack".
 // ==================================================================
 
 static int s_passed = 0, s_failed = 0;
@@ -19,105 +19,103 @@ static bool streq(const char* a, const char* b) {
     return a != nullptr && b != nullptr && strcmp(a, b) == 0;
 }
 
-static_assert(sizeof(DeviceState) == 1, "DeviceState must stay a 1-byte enum");
-
 // ------------------------------------------------------------------
 // Capturing sink: records every call into the struct handed in as
 // userContext, so a test can assert on exactly what arrived.
 // ------------------------------------------------------------------
 struct SinkCapture {
-    int         calls       = 0;
-    const char* layer       = nullptr;
-    const char* sourceName  = nullptr;
-    uint32_t    errorCode   = 0;
-    char        errorString[48] = {};   // a copy: the text is valid only during the call
-    void*       userContext = nullptr;
+    int            calls           = 0;
+    const char*    typeName        = nullptr;
+    const IDevice* source          = nullptr;
+    uint32_t       errorCode       = 0;
+    char           errorString[48] = {};   // a copy: the text is valid only during the call
+    void*          userContext     = nullptr;
 };
 
-static void captureSink(const char* layer, const char* sourceName, uint32_t errorCode,
+static void captureSink(const char* typeName, const IDevice* source, uint32_t errorCode,
                         const char* errorString, void* userContext) {
     SinkCapture* cap = static_cast<SinkCapture*>(userContext);
     if (!cap) return;
     ++cap->calls;
-    cap->layer       = layer;
-    cap->sourceName  = sourceName;
+    cap->typeName    = typeName;
+    cap->source      = source;
     cap->errorCode   = errorCode;
     snprintf(cap->errorString, sizeof(cap->errorString), "%s", errorString);
     cap->userContext = userContext;
 }
 
+static const char* text(const UdiAttr& a) {
+    static char buf[48];
+    a.GetValueName(buf, sizeof(buf));
+    return buf;
+}
+
 // ------------------------------------------------------------------
-// MockSolenoid -- an actuator with a real busy concept (energized). Like
-// every device it only assigns rState/rStatus/rError; IDevice serves them.
+// MockSolenoid -- an actuator with a real busy concept (energized).
 // ------------------------------------------------------------------
 class MockSolenoid : public IDevice {
 public:
-    enum Status { STATUS_NONE = 0, STATUS_ENERGIZED = 1 };
-    enum Error  { ERR_NONE = 0, ERR_OVERCURRENT = 1, ERR_NOT_ONLINE = 2 };
-
-    MockSolenoid() {
-        deviceName  = "MockSolenoid";
-        statusNames = UDI_TEXT("None|Energized");
-        errorNames  = UDI_TEXT("No error|Coil overcurrent|Command rejected: not online");
-    }
+    UDI_DEVICE(MockSolenoid, "Solenoid")
+    UDI_ENUM(enumMockError,
+        (0, ERR_NONE,        "No error"),
+        (1, ERR_OVERCURRENT, "Coil overcurrent"),
+        (2, ERR_NOT_ONLINE,  "Command rejected: not online"))
+    UDI_R(uint8_t, rError,     NO_UNIT, NO_MIN, NO_MAX, ERR_NONE, enumMockError)
+    UDI_R(bool,    rEnergized, NO_UNIT, NO_MIN, NO_MAX, false,    NO_ENUM)
 
     bool begin() override {
-        energized_ = false;
-        rStatus = STATUS_NONE; rError = ERR_NONE; rState = DeviceState::IDLE;
+        rEnergized.UpdateValue(false);
+        rError.UpdateValue(ERR_NONE);
+        rState.UpdateValue(ST_IDLE);
         return true;
     }
 
     bool energize() {
-        if (rState == DeviceState::OFFLINE) { reportError("Solenoid", ERR_NOT_ONLINE); return false; }
-        if (rError != ERR_NONE) return false;
-        energized_ = true;
-        rStatus = STATUS_ENERGIZED; rState = DeviceState::BUSY;
+        if (rState.Get() == ST_OFFLINE) { reportError(rError, ERR_NOT_ONLINE); return false; }
+        if (rError.Get() != ERR_NONE) return false;
+        rEnergized.UpdateValue(true);
+        rState.UpdateValue(ST_BUSY);
         return true;
     }
-    void release() { energized_ = false; rStatus = STATUS_NONE; rState = DeviceState::IDLE; }
 
     // Simulates the hardware tripping mid-actuation: latch + report.
     void injectOvercurrent() {
-        energized_ = false;
-        rStatus = STATUS_NONE; rError = ERR_OVERCURRENT; rState = DeviceState::ERRORED;
-        reportError("Solenoid", rError);
+        rEnergized.UpdateValue(false);
+        rError.UpdateValue(ERR_OVERCURRENT);
+        rState.UpdateValue(ST_ERRORED);
+        reportError(rError);
     }
-    bool clearFault() { rError = ERR_NONE; rState = DeviceState::IDLE; return true; }
+    void clearFault() { rError.UpdateValue(ERR_NONE); rState.UpdateValue(ST_IDLE); }
 
-    // Reports a code its errorNames does not list.
-    void reportUnlisted() { reportError("Solenoid", 7); }
-
-private:
-    bool energized_ = false;
+    // Reports a code its enumeration does not list.
+    void reportUnlisted() { reportError(rError, 7); }
 };
 
 // ------------------------------------------------------------------
 // MockCurrentSensor -- a pure sensor: no busy concept, so it is honestly
-// only ever OFFLINE / IDLE / ERRORED (never a faked BUSY). It declares no
-// status names: its status is always 0.
+// only ever OFFLINE / IDLE / ERRORED (never a faked BUSY).
 // ------------------------------------------------------------------
 class MockCurrentSensor : public IDevice {
 public:
-    enum Status { STATUS_NONE = 0 };
-    enum Error  { ERR_NONE = 0, ERR_NO_READING = 1 };
+    UDI_DEVICE(MockCurrentSensor, "Sensor")
+    UDI_ENUM(enumSensorError,
+        (0, ERR_NONE,       "No error"),
+        (1, ERR_NO_READING, "No reading available"))
+    UDI_R(uint8_t, rError, NO_UNIT, NO_MIN, NO_MAX, ERR_NONE, enumSensorError)
+    UDI_R(float,   rAmps,  "A",     NO_MIN, NO_MAX, 0.0f,     NO_ENUM)
 
-    MockCurrentSensor() {
-        deviceName = "MockCurrentSensor";
-        errorNames = UDI_TEXT("No error|No reading available");
-    }
+    bool begin() override { rError.UpdateValue(ERR_NONE); rState.UpdateValue(ST_IDLE); return true; }
 
-    bool begin() override { rError = ERR_NONE; rState = DeviceState::IDLE; return true; }
-
-    float readAmps() {
+    void read() {
         if (!haveReading_) {
-            rError = ERR_NO_READING;
-            rState = DeviceState::ERRORED;
-            reportError("Sensor", rError);
-            return 0.0f;
+            rError.UpdateValue(ERR_NO_READING);
+            rState.UpdateValue(ST_ERRORED);
+            reportError(rError);
+            return;
         }
-        rError = ERR_NONE;
-        rState = DeviceState::IDLE;
-        return amps_;
+        rAmps.UpdateValue(amps_);
+        rError.UpdateValue(ERR_NONE);
+        rState.UpdateValue(ST_IDLE);
     }
     void setReading(float amps) { amps_ = amps; haveReading_ = true; }
     void dropReading()          { haveReading_ = false; }
@@ -127,17 +125,11 @@ private:
     float amps_        = 0.0f;
 };
 
-// A device that declares nothing but begin(): no name, no names lists.
+// Declares nothing: no UDI_DEVICE, only begin(). Still a valid device.
 class SilentDevice : public IDevice {
 public:
-    bool begin() override { rState = DeviceState::IDLE; return true; }
-    void fail() { rError = 1; rState = DeviceState::ERRORED; reportError("Silent", rError); }
+    bool begin() override { rState.UpdateValue(ST_IDLE); return true; }
 };
-
-static bool nameIs(const IDevice& d, uint32_t err, const char* expected) {
-    char buf[48];
-    return d.errorName(err, buf, sizeof(buf)) && streq(buf, expected);
-}
 
 int main() {
     printf("=== IDevice global error sink ===\n\n");
@@ -146,10 +138,8 @@ int main() {
         printf("-- 1. no sink installed --\n");
         IDevice::setGlobalErrorSink(nullptr);
         MockSolenoid sol;
-        // Not begun -> energize() reports ERR_NOT_ONLINE; with no sink this
-        // must simply be a no-op (no crash, command still rejected).
         check(!sol.energize(), "command rejected while offline");
-        check(sol.getState() == DeviceState::OFFLINE, "state stays OFFLINE (report did not fault the device)");
+        check(sol.rState.Get() == ST_OFFLINE, "state stays OFFLINE (report did not fault the device)");
     }
 
     {
@@ -163,13 +153,12 @@ int main() {
         sol.injectOvercurrent();
 
         check(cap.calls == 1,                                        "sink called exactly once");
-        check(streq(cap.layer, "Solenoid"),                          "layer == call-site layer string");
-        check(streq(cap.sourceName, sol.getDeviceName()),            "sourceName == getDeviceName()");
-        check(cap.errorCode == MockSolenoid::ERR_OVERCURRENT,        "errorCode == the reported code");
-        check(streq(cap.errorString, "Coil overcurrent") && nameIs(sol, cap.errorCode, cap.errorString),
-              "errorString is the code's name from errorNames");
+        check(streq(cap.typeName, "Solenoid"),                       "typeName from UDI_DEVICE");
+        check(cap.source == &sol,                                    "source is the reporting device");
+        check(cap.errorCode == MockSolenoid::ERR_OVERCURRENT,        "errorCode == rError's value");
+        check(streq(cap.errorString, "Coil overcurrent"),            "errorString is the value's description");
         check(cap.userContext == &cap,                               "userContext round-trips");
-        check(sol.getError() == cap.errorCode,                       "device's getError() matches what the sink saw");
+        check(sol.rError.Get() == static_cast<int32_t>(cap.errorCode), "the attribute holds what the sink saw");
     }
 
     {
@@ -183,15 +172,15 @@ int main() {
         sensor.begin();
 
         sol.injectOvercurrent();
-        check(cap.calls == 1 && streq(cap.layer, "Solenoid") && streq(cap.sourceName, "MockSolenoid"),
-              "actuator report arrives tagged Solenoid/MockSolenoid");
+        check(cap.calls == 1 && streq(cap.typeName, "Solenoid") && cap.source == &sol,
+              "actuator report arrives tagged Solenoid, from the solenoid");
 
         sensor.dropReading();
-        sensor.readAmps();
-        check(cap.calls == 2 && streq(cap.layer, "Sensor") && streq(cap.sourceName, "MockCurrentSensor"),
-              "sensor report arrives at the SAME sink tagged Sensor/MockCurrentSensor");
+        sensor.read();
+        check(cap.calls == 2 && streq(cap.typeName, "Sensor") && cap.source == &sensor,
+              "sensor report arrives at the SAME sink tagged Sensor");
         check(cap.errorCode == MockCurrentSensor::ERR_NO_READING && streq(cap.errorString, "No reading available"),
-              "sensor's own error code/string arrive (not the solenoid's)");
+              "sensor's own error code/text arrive (not the solenoid's)");
     }
 
     {
@@ -200,15 +189,15 @@ int main() {
         IDevice::setGlobalErrorSink(captureSink, &cap);
         MockCurrentSensor sensor;
         sensor.begin();
-        sensor.readAmps();
+        sensor.read();
         check(cap.calls == 1, "report fires while installed");
 
         IDevice::setGlobalErrorSink(nullptr);
-        sensor.readAmps();
+        sensor.read();
         check(cap.calls == 1, "no further reports after uninstall");
     }
 
-    printf("\n=== DeviceState / Status / Error ===\n\n");
+    printf("\n=== rState ===\n\n");
 
     {
         printf("-- 5. lifecycle through a bare IDevice* --\n");
@@ -220,67 +209,50 @@ int main() {
         IDevice* devices[] = { &sol, &sensor };
 
         for (IDevice* d : devices) {
-            check(d->getState() == DeviceState::OFFLINE && !d->isOnline(), "OFFLINE and !isOnline() before begin()");
+            check(d->rState.Get() == ST_OFFLINE && streq(text(d->rState), "Offline"), "OFFLINE before begin()");
         }
         for (IDevice* d : devices) {
             check(d->begin(), "begin() returns true");
-            check(d->getState() == DeviceState::IDLE && d->isOnline(), "IDLE and isOnline() after begin()");
-            check(d->getStatus() == 0, "status == 0 when idle");
-            check(d->getError() == 0 && nameIs(*d, 0, "No error"), "error == 0 / \"No error\" when idle");
+            check(d->rState.Get() == ST_IDLE, "IDLE after begin()");
         }
 
-        IDevice& dsol = sol;
-        check(sol.energize(), "energize() accepted while IDLE");
-        check(dsol.getState() == DeviceState::BUSY,                       "energized -> state BUSY");
-        check(dsol.getStatus() == MockSolenoid::STATUS_ENERGIZED,         "energized -> status STATUS_ENERGIZED");
-        { char st[16]; check(dsol.statusName(dsol.getStatus(), st, sizeof(st)) && streq(st, "Energized"), "statusName(status) == \"Energized\""); }
+        check(sol.energize(),                                          "energize() accepted while IDLE");
+        check(sol.rState.Get() == ST_BUSY && sol.rEnergized.Get(),     "energized -> state BUSY");
 
         sol.injectOvercurrent();
-        check(dsol.getState() == DeviceState::ERRORED,                   "fault -> state ERRORED");
-        check(dsol.getStatus() == MockSolenoid::STATUS_NONE,             "fault drops status back to STATUS_NONE");
-        check(dsol.getError() == MockSolenoid::ERR_OVERCURRENT,          "fault -> getError() == ERR_OVERCURRENT");
-        check(nameIs(dsol, dsol.getError(), cap.errorString),           "errorName(getError()) == what the sink received");
-        check(dsol.isOnline(),                                            "ERRORED device is still online (ERRORED != OFFLINE)");
-        check(!sol.energize() && cap.calls == 1,                          "command rejected while ERRORED without a second report");
+        check(sol.rState.Get() == ST_ERRORED,                          "fault -> state ERRORED");
+        check(!sol.rEnergized.Get(),                                   "fault drops the coil");
+        check(streq(text(sol.rError), cap.errorString),                "rError's description == what the sink received");
+        check(!sol.energize() && cap.calls == 1,                       "command rejected while ERRORED without a second report");
 
         sol.clearFault();
-        check(dsol.getState() == DeviceState::IDLE && dsol.getError() == 0, "clearFault() -> IDLE, error cleared");
+        check(sol.rState.Get() == ST_IDLE && sol.rError.Get() == 0,    "clearFault() -> IDLE, error cleared");
 
-        IDevice& dsen = sensor;
         sensor.setReading(1.25f);
-        sensor.readAmps();
-        check(dsen.getState() == DeviceState::IDLE, "sensor stays IDLE during a live read (never a faked BUSY)");
+        sensor.read();
+        check(sensor.rState.Get() == ST_IDLE && sensor.rAmps.GetFloat() == 1.25, "sensor stays IDLE during a live read (never a faked BUSY)");
         sensor.dropReading();
-        sensor.readAmps();
-        check(dsen.getState() == DeviceState::ERRORED && dsen.getError() == MockCurrentSensor::ERR_NO_READING,
+        sensor.read();
+        check(sensor.rState.Get() == ST_ERRORED && sensor.rError.Get() == MockCurrentSensor::ERR_NO_READING,
               "sensor dropout -> ERRORED / ERR_NO_READING");
         sensor.setReading(0.5f);
-        sensor.readAmps();
-        check(dsen.getState() == DeviceState::IDLE, "reading restored -> IDLE again");
+        sensor.read();
+        check(sensor.rState.Get() == ST_IDLE, "reading restored -> IDLE again");
 
         IDevice::setGlobalErrorSink(nullptr);
     }
 
     {
-        printf("\n-- 6. deviceStateToString() --\n");
-        check(streq(deviceStateToString(DeviceState::OFFLINE), "OFFLINE"), "OFFLINE");
-        check(streq(deviceStateToString(DeviceState::IDLE),    "IDLE"),    "IDLE");
-        check(streq(deviceStateToString(DeviceState::BUSY),    "BUSY"),    "BUSY");
-        check(streq(deviceStateToString(DeviceState::ERRORED), "ERRORED"), "ERRORED");
-        check(streq(deviceStateToString(static_cast<DeviceState>(42)), "UNKNOWN"), "out-of-range value -> UNKNOWN");
-    }
-
-    {
-        printf("\n-- 7. update() default is a callable no-op --\n");
-        MockCurrentSensor sensor;   // does not override update()
+        printf("\n-- 6. update() default is a callable no-op --\n");
+        MockCurrentSensor sensor;
         sensor.begin();
         IDevice& d = sensor;
         d.update();
-        check(d.getState() == DeviceState::IDLE, "update() on a device that doesn't override it changes nothing");
+        check(d.rState.Get() == ST_IDLE, "update() on a device that doesn't override it changes nothing");
     }
 
     {
-        printf("\n-- 8. names: missing lists and unlisted codes --\n");
+        printf("\n-- 7. descriptions: unlisted codes, devices without UDI_DEVICE --\n");
         SinkCapture cap;
         IDevice::setGlobalErrorSink(captureSink, &cap);
 
@@ -288,18 +260,19 @@ int main() {
         sol.begin();
         sol.reportUnlisted();
         check(cap.calls == 1 && cap.errorCode == 7 && streq(cap.errorString, "Unknown error"),
-              "a code past the end of errorNames arrives as \"Unknown error\"");
+              "a code its enumeration does not list arrives as \"Unknown error\"");
+        check(sol.rError.Get() == MockSolenoid::ERR_NONE, "reportError(attr, code) stores nothing");
 
         SilentDevice silent;
-        silent.begin();
-        silent.fail();
-        check(cap.calls == 2 && streq(cap.sourceName, "") && streq(cap.errorString, "Unknown error"),
-              "a device with no name and no list still reports, with empty name and \"Unknown error\"");
+        check(silent.begin() && silent.rState.Get() == ST_IDLE, "a device with no declarations still has rState");
+        check(streq(silent.udiTypeName(), ""),                    "and an empty type name");
+
         char buf[8];
-        check(!silent.statusName(0, buf, sizeof(buf)) && buf[0] == '\0', "statusName() without a list is false and empty");
-        check(!sol.errorName(300, buf, sizeof(buf)) && buf[0] == '\0',    "a code above 255 has no name");
-        check(!sol.errorName(MockSolenoid::ERR_OVERCURRENT, buf, sizeof(buf)) && streq(buf, "Coil ov"),
+        sol.injectOvercurrent();
+        check(!sol.rError.GetValueName(buf, sizeof(buf)) && streq(buf, "Coil ov"),
               "a short buffer is cut, terminated and reported");
+        check(!sol.rEnergized.GetValueName(buf, sizeof(buf)) && buf[0] == '\0',
+              "an attribute without an enumeration has no value name");
 
         IDevice::setGlobalErrorSink(nullptr);
     }
