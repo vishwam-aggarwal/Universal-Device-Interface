@@ -5,6 +5,7 @@
 #include "GlobalErrorSink.h"
 #include "IDescriber.h"
 #include "UdiDeclare.h"
+#include "UdiTime.h"
 
 // ==================================================================
 // IDevice -- the shared base class for every device in the
@@ -14,10 +15,17 @@
 //
 // WHAT AN IMPLEMENTER WRITES: UDI_DEVICE(Self, "TypeName"), one
 // declaration per attribute (UdiDeclare.h), begin() (and update()/end()
-// if needed), and a Set_ callback for every w attribute and every cnf
-// declared with one. Nothing else: the description the framework walks
-// is generated from the declarations, and every value is served exactly
-// as the device last wrote it with UpdateValue().
+// if needed), and a Set_ callback for every w attribute and every setup
+// cnf declared with one. Nothing else: the description the framework
+// walks is generated from the declarations, and every value is served
+// exactly as the device last wrote it with UpdateValue().
+//
+// THE SCAN. Every period the runtime: copies io links in, calls
+// update(t) on the tree, copies io links out. A device touches no
+// hardware itself -- its hardware values are io attributes, and an io
+// server device (its own IDevice) does the pin/bus access. It reads no
+// clock either: t is the period's time, one sample for every device.
+// Callbacks only latch (Attr.h); update(t) is where things happen.
 //
 // Every device has ONE attribute it does not declare: rState, using the
 // standard enumeration below. Everything else -- status, error, any
@@ -58,8 +66,11 @@ public:
     // ST_OFFLINE.
     virtual bool begin() = 0;
 
-    // Optional periodic/background processing. Defaults to a no-op.
-    virtual void update() {}
+    // The scan: turn latched requests and io inputs into io outputs, r
+    // values, timestamps and rState. Called once per period with that
+    // period's time; a parent passes t on to the children it updates.
+    // Defaults to a no-op.
+    virtual void update(const UdiTime& t) { (void)t; }
 
     // Optional teardown, the mirror of begin(): leave the hardware safe
     // and release what begin() took. Defaults to a no-op.

@@ -70,7 +70,7 @@ header comments of `UdiDeclare.h`, `UdiAttr.h`, `IDevice.h`, `Attr.h` — they'r
   MSVC, gcc 7 (arm) and avr-gcc 7.3), `udiTypeName()` and a generated `describeSelf()`
   that walks items 0..N-1 in declaration order. `UDI_DEVICE_EXTENDS(Self, Base, "T")` calls
   `Base::describeSelf()` first. Max `UDI_MAX_ITEMS` (64) items per device.
-- `UDI_R / UDI_W / UDI_MOUNT / UDI_MOUNT_CB / UDI_SETUP / UDI_SETUP_CB / UDI_IN / UDI_OUT
+- `UDI_R / UDI_W / UDI_MOUNT / UDI_SETUP / UDI_SETUP_CB / UDI_IN / UDI_OUT
   (type, name, unit, min, max, default, enum)`. Each emits `static const UdiAttrInfo*
   udiInfo_<name>()` returning a function-local `static constexpr ... PROGMEM` info (so it is
   constant-initialized — a non-constant initializer is a compile error, never a silent
@@ -110,7 +110,7 @@ refused by the device. All text is `AttrText` (flash on AVR, `UDI_TEXT`). Fields
 
 **`src/IDevice.h`** — `UDI_ENUM(enumDeviceState, (0, ST_OFFLINE, "Offline"),
 (1, ST_IDLE, ...), (2, ST_BUSY, ...), (3, ST_ERRORED, ...))` replaces `enum class
-DeviceState` and `deviceStateToString`. `begin()` is the only pure virtual; `update()`,
+DeviceState` and `deviceStateToString`. `begin()` is the only pure virtual; `update(const UdiTime&)`,
 `end()` optional. Public `UdiAttr rState` (u8, standard enum, default `ST_OFFLINE`) — the
 ONLY mandatory attribute (user's decision; rStatus/rError are ordinary optional
 attributes). Non-virtual `describe()` lists `rState`, then `describeSelf()`. **No instance
@@ -124,37 +124,86 @@ Statics in `src/IDevice.cpp`.
 **`src/IDescriber.h`** — the visitor `describe()` calls: `child(name, device)` and
 `attr(attr)`. Protected non-virtual destructor, so concrete describers should be `final`.
 
-**`src/SolenoidDevice.h`** — the template device. Constructor takes only the injected
-`SolenoidPort`; `cnfMaxOnTimeMs` (mount, 1..NO_MAX, NO_DEFAULT) must be set before
-`begin()`, which otherwise fails and stays offline. `wCommand` (`enumSolenoidCommand`)
-with required `Set_wCommand`, `rError` (`enumSolenoidError`), `rEnergized`. Both
-`reportError` uses side by side: `reportError(rError, ERR_NOT_ONLINE)` (diagnostic, not
-stored) and `reportError(rError)` after latching `ERR_ON_TIME_EXCEEDED`. Elapsed time is
-unsigned `now - since` (millis() wrap tested).
+**v0.7 (2026-10-01): hardware behind io, time in the scan, mount means boot, text
+attributes.** Decisions, all the user's:
+- **Hardware lives behind io.** A device is pure logic; every pin/bus/sensor value is an
+  io attribute. An app mounts an **io server** — its own `IDevice`, implementing the HAL —
+  and links each device's io to it. The solenoid's coil is `ioCoil` (OUT);
+  `examples/SolenoidDeviceDemo/DemoIoServer.h` (Arduino-only, sketch-local) turns it into
+  `digitalWrite`.
+- **Time is the scan's, not a device's and not io.** `IDevice::update(const UdiTime& t)`;
+  `src/UdiTime.h`: `UdiTime { uint64_t us; uint32_t dtUs; uint32_t cycle; ms() }` (64-bit
+  by decision — no wraps anywhere) and `UdiClockWidener::advance(uint32_t rawUs)` (no
+  platform code; feed it at least once per counter wrap). A parent passes `t` to its
+  children. UDF's `ITickSource` family (`TimerTickSource`, `LinuxTickSource`,
+  `ChronoTickSource`, `FakeTickSource`) is where each platform's clock will come from.
+- **Rule (adopted): `Set_` latches, `update(t)` acts.** Callbacks validate and latch —
+  fast, non-blocking, no hardware, no timestamps; outputs, timestamps and state change
+  only in `update(t)`. Written into `Attr.h` / `IDevice.h` / `UdiDeclare.h`. This lets the
+  runtime pick WHEN callbacks run: microcontroller — in the scan; OS — immediately from
+  the writer's thread under one priority-inheritance tree lock, io still in the scan
+  (UDF's job; devices contain no locks; contract: no callback concurrent with any
+  `update` of its tree).
+- **Mount = read once at boot, no callback** (`UDI_MOUNT_CB` removed, compile-fail test
+  `mount_cb`). Microcontroller: the firmware is the configuration (defaults, or the sketch
+  sets values before `begin()`); no EEPROM layer (decided: per-chip storage is not worth
+  maintaining). **Setup = live**: plain store, or `UDI_SETUP_CB`.
+- **Text attributes**: `UDI_MOUNT_STR / UDI_SETUP_STR / UDI_SETUP_STR_CB / UDI_W_STR /
+  UDI_R_STR / UDI_IN_STR / UDI_OUT_STR (name, capacity, "default" | NO_TEXT)`.
+  `AttrType::STR`, `AttrNumber::s` points at a `char udiBuf_<name>[cap+1]` member; capacity
+  in `maximum.u`, default text in flash (`UdiAttrInfo::defaultText`, `Attr::defaultText`).
+  `GetString()`, `GetText()`, `UpdateValue(const char*)` (cut to capacity); numbers and text
+  ignore each other. Absent flash text fields are `nullptr`, never a plain `""` (on AVR a
+  plain literal is in RAM but would be read as flash).
+- Not built: a `service()` background hook — add only when a device needs slow non-real-
+  time work.
 
-**`examples/SolenoidDeviceDemo`** — config through the attribute, commands through
-`Set_wCommand` as the framework would, state and error printed with `GetValueName()`,
-`F()` strings. Uno: 7586 B flash / 310 B RAM (v0.5: 5116 / 751).
+**`src/SolenoidDevice.h`** — the template device, pure logic. No constructor arguments;
+`cnfMaxOnTimeMs` (mount, 1..NO_MAX, NO_DEFAULT) must be set before `begin()`, which
+otherwise fails. `Set_wCommand` / `energize()` / `release()` / `clearFault()` accept or
+refuse and latch one pending command (last wins); `update(t)` applies it, records
+`energizedAtUs = t.us`, and cuts the coil at `cnfMaxOnTimeMs * 1000` µs. Both `reportError`
+uses side by side. `ioCoil`, `rEnergized`, `rError`, `rState`.
 
-**Tests** — `test_device_sink.cpp` (37 checks: sink dispatch, two device types, uninstall,
-rState lifecycle, unlisted codes, an undeclared device), `test_solenoid_device.cpp` (48:
-config, rejection, cutoff, recovery, wrap, no sink — commanded through the hook),
-`test_describe.cpp` (69: generated records, enum gaps/negatives, callbacks accept/refuse,
-`_CB` vs plain, children, EXTENDS, `UdiAttr` conversions), and `tests/compile_fail/` (6
-sources that must not compile; each CTest passes only when the compiler output names the
-rule; regexes verified against MSVC and gcc). **Locally with NMake, run `ctest` from a VS
-developer shell** (the compile-fail tests rebuild targets and need `nmake` on PATH).
+**`examples/SolenoidDeviceDemo`** — `SolenoidDevice` + `DemoIoServer` + `UdiClockWidener`;
+`scan()` = sample the clock, `latch.update(t)`, copy the link, `io.update(t)`. Commands
+through `Set_wCommand`, then one scan. Uno: 9196 B flash / 372 B RAM (v0.6: 7586 / 310 —
+64-bit time, the widener and the io server device).
 
-**Deferred migration (by decision, 2026-10-01): UDI first, then the siblings, UDF last.**
-Their desktop builds pin older UDI submodules and keep working; **their Arduino builds share
-this folder and fail until migrated.** Per library: declare every exposed value with the
-macros (`UDI_DEVICE` first), replace getter overrides and state logic with
-`UpdateValue()` on `rState` and the device's own attributes, enums become `UDI_ENUM
-(enumXxx, ...)`, `DeviceState::X` → `ST_X`, constructor config → mount attributes,
-`describe` overrides → declarations/`UDI_CHILD`, sinks take the new signature and copy
-`errorString`. UDF additionally: `Attr.value` is `AttrNumber*`, the write path calls the
-hook instead of storing (new "refused by device" result), enumerations are `AttrEnum`
-tables (ITEM/TreePrinter/ValueText), tree-based names, the new sink.
+**Tests** — `test_device_sink.cpp` (37), `test_solenoid_device.cpp` (40: config, refusal,
+latch-then-act, last wins, cutoff in µs, fault between latch and scan, a run across 2^32
+µs), `test_describe.cpp` (87: generated records, enums, callbacks, mount without callback,
+text attributes, `update(t)` through a parent), `test_time.cpp` (7), and
+`tests/compile_fail/` (8: w/`_CB`/text w without `Set_`, `UDI_MOUNT_CB`, prefix, enum
+name, type, `rState`). **Locally with NMake, run `ctest` from a VS developer shell.**
+
+**UDF to-do from v0.6/v0.7 (deferred by decision: UDI first, UDF last).**
+- **Config file (OS only)**: a file in a data folder holding every cnf (mount and setup)
+  by path → value (enums by number; text as strings). **Created when missing** (every cnf
+  at its default or current value); **updated when the device tree changes** (new paths
+  added with their defaults, existing values kept, paths that no longer exist set aside —
+  not silently deleted). At boot: build the tree, apply the file like ordinary writes
+  (rules, then `Set_` for `_CB` setups) before `begin()`; a mount without a default missing
+  from the file stops startup with the list; unknown paths warn. At runtime: a **mount**
+  write does not change the live value — it is saved to the file as *pending until
+  restart*; a **setup** write is applied live and **always saved**.
+- **Write policies**: `WRITES_IN_SCAN` (microcontroller; today's `WriteQueue`) and
+  `WRITES_IMMEDIATE` (OS; caller's thread, tree lock, accept/refuse returned at once).
+- **Scan**: `ITickSource` → `UdiTime`; Runtime period = links in → `update(t)` → links out;
+  links are M6.
+- **Record changes**: `Attr.value` is `AttrNumber*`; the write path calls the hook INSTEAD
+  of storing (new "refused by device" result); enums are `AttrEnum` tables (ITEM,
+  TreePrinter, ValueText); `AttrType::STR` over the protocol (capacity, text values);
+  tree-based names; the new sink signature.
+
+**Sibling migration** (each library at its turn; their Arduino builds share this folder
+and fail until migrated): declare every exposed value with the macros (`UDI_DEVICE`
+first); state via `rState.UpdateValue(ST_*)`; enums → `UDI_ENUM(enumXxx, ...)`,
+`DeviceState::X` → `ST_X`; constructor config → mount attributes; hardware access → io
+attributes plus an io server per backend (Servo, PCA9685, ODrive CAN, AS5600 I2C, ...);
+`update()` → `update(const UdiTime&)` with no clock reads; callbacks latch only;
+`describe` overrides → declarations/`UDI_CHILD`; sinks take the new signature and copy
+`errorString`.
 
 ### Three-tier State / Status / Error — the core design decision
 

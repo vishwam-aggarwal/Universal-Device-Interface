@@ -73,16 +73,29 @@ This library depends on nothing. Everything else depends on it.
   `UDI_OUT`) giving its type, name, unit, limits, default and enumeration. UDI generates the
   member, its description in flash, the list the framework walks, and the wiring of its
   callback. No describe code, no getters, no string tables.
-- **`UdiAttr`** — the device reads a value with `Get()` (whole numbers, enumerated values)
-  or `GetFloat()` (reals) and changes it with `UpdateValue()`; everything else comes from
+- **`UdiAttr`** — the device reads a value with `Get()` (whole numbers, enumerated values),
+  `GetFloat()` (reals) or `GetString()` (text) and changes it with `UpdateValue()`; everything else comes from
   methods (`GetType()`, `GetName()`, `GetUnit()`, `GetMin()`, `GetEnum()`,
   `GetValueName()`, ...). Each attribute costs its value plus one pointer of RAM; its
   name, unit, limits, default and enumeration live in flash.
 - **Callbacks the compiler enforces.** Every `w` attribute requires
-  `bool Set_wXyz(const UdiAttr& c)` — leave it out and the build fails. A `cnf` gets one
-  only when declared with `UDI_MOUNT_CB` / `UDI_SETUP_CB`, which then require it too. The
-  framework checks the rules, then calls the callback *instead of* storing: the device
-  stores the value itself if it accepts it.
+  `bool Set_wXyz(const UdiAttr& c)` — leave it out and the build fails. A setup `cnf` gets
+  one only when declared with `UDI_SETUP_CB`, which then requires it too; a mount never
+  has one. The framework checks the rules, then calls the callback *instead of* storing:
+  the device stores the value itself if it accepts it. **A callback only latches;
+  `update(t)` acts.**
+- **Hardware lives behind io.** A device is pure logic: its hardware values are io
+  attributes (the solenoid's coil is an `ioCoil` OUT), and an **io server** — its own
+  device — does the pin/bus access. They are connected by linking io, once per period.
+- **Time is the scan's.** `update(const UdiTime& t)` gets one 64-bit microsecond time per
+  period (`t.us`, `t.dtUs`, `t.cycle`); devices never read a clock, and nothing wraps.
+  `UdiClockWidener` turns a wrapping counter such as `micros()` into it.
+- **Mount means boot, setup means live.** A mount cnf is read once, before `begin()`,
+  and changes only on the next start (on a microcontroller the firmware is the
+  configuration; on an OS the framework keeps it in a config file). A setup cnf takes
+  effect immediately.
+- **Text attributes** of a fixed capacity (`UDI_MOUNT_STR(cnfPort, 32, "COM3")`), in a
+  buffer inside the device — ports, paths, addresses, no heap.
 - **Enumerations as named numbers with descriptions**: `UDI_ENUM(enumMode,
   (0, MODE_OFF, "Off"), (5, MODE_SLOW, "Slow"))`. Numbers are explicit (gaps allowed);
   descriptions are what a front end shows in a dropdown. An attribute names its
@@ -96,8 +109,8 @@ This library depends on nothing. Everything else depends on it.
 - `GlobalErrorSink` + `IDevice::setGlobalErrorSink()` — **one** registration for every
   device type in the whole family. `reportError(rError)` sends the attribute's value and
   its description.
-- `SolenoidDevice` — a shipped, tested sample device (non-motion on purpose) with its
-  hardware pin and clock injected, so the identical class runs on Arduino and desktop.
+- `SolenoidDevice` — a shipped, tested sample device (non-motion on purpose): pure logic,
+  no pin and no clock, so the identical class runs on any board, on an OS and in a test.
 - `examples/SolenoidDeviceDemo` — runs the sample on real hardware with the error sink
   printing to Serial.
 - Header-only apart from `IDevice.cpp`, which holds two static definitions.
@@ -140,6 +153,7 @@ for a solenoid coil (this is `examples/SolenoidDeviceDemo`, condensed):
 ```cpp
 #include <IDevice.h>
 #include <SolenoidDevice.h>
+#include "DemoIoServer.h"          // the sketch's io server: ioCoil -> digitalWrite()
 
 void serialErrorSink(const char* typeName, const IDevice* /*source*/, uint32_t code,
                      const char* text, void* /*ctx*/) {
@@ -147,28 +161,26 @@ void serialErrorSink(const char* typeName, const IDevice* /*source*/, uint32_t c
     Serial.print(" code ");   Serial.print(code); Serial.print(": "); Serial.println(text);
 }
 
-// The only Arduino-specific glue: how to drive the coil, how to read the clock.
-static const int COIL_PIN = LED_BUILTIN;
-static void     coilWrite(bool on, void* ctx) { digitalWrite(*(const int*)ctx, on ? HIGH : LOW); }
-static uint32_t clockNowMs(void*)            { return millis(); }
-static const SolenoidPort port = { coilWrite, clockNowMs, (void*)&COIL_PIN };
-
-SolenoidDevice latch(port);                  // hardware only; config is an attribute
+SolenoidDevice  latch;             // logic: no pin, no clock
+DemoIoServer    io;                // hardware: cnfCoilPin defaults to LED_BUILTIN
+UdiClockWidener clock;
 
 void setup() {
     Serial.begin(115200);
-    pinMode(COIL_PIN, OUTPUT);
     IDevice::setGlobalErrorSink(serialErrorSink);   // ONCE, for every device type
     latch.cnfMaxOnTimeMs.UpdateValue(2000);         // mount config, before begin()
     latch.begin();
+    io.begin();
+    latch.energize();                               // latched; the next scan acts
 }
 
-void loop() {
-    latch.energize();                        // rState Busy
-    // ... forget to release() ...
-    latch.update();                          // at 2 s: coil cut, the on-time error
-                                             // reaches serialErrorSink, rState Errored
-    if (latch.rState.Get() == ST_ERRORED) latch.clearFault();   // back to Idle
+void loop() {                                       // one scan period
+    UdiTime t = clock.advance(micros());            // one clock sample for every device
+    latch.update(t);                                // logic: at 2 s the cutoff fires and
+                                                    // the on-time error reaches the sink
+    io.ioCoil.UpdateValue(latch.ioCoil);            // the io link (UDF does this for you)
+    io.update(t);                                   // hardware
+    if (latch.rState.Get() == ST_ERRORED) latch.clearFault();
     delay(10);
 }
 ```
@@ -196,11 +208,12 @@ it overheats).
 | | |
 |---|---|
 | Attributes | `cnfMaxOnTimeMs` (mount u32, ms, 1 .. no max, **no default: must be configured**), `wCommand` (w u8, `enumSolenoidCommand`: None / Energize / Release / Clear fault), `rError` (r u8, `enumSolenoidError`), `rEnergized` (r bool), plus `rState`. |
-| Lifecycle | `begin()` drives the coil to a known-safe OFF state; without `cnfMaxOnTimeMs` it fails and stays Offline, otherwise it goes Idle. `update()` is the protective cutoff — call it every `loop()`. |
-| Commands | Through `wCommand` (`Set_wCommand()`), or the same actions as C++ methods: `energize()`, `release()`, `clearFault()`. |
+| Lifecycle | `begin()` sets `ioCoil` off; without `cnfMaxOnTimeMs` it fails and stays Offline, otherwise it goes Idle. `update(t)` applies the latched command and is the protective cutoff — call it every period. |
+| Commands | Through `wCommand` (`Set_wCommand()` accepts or refuses and **latches**; the next `update(t)` acts; the last request in a period wins), or the same requests as C++ methods: `energize()`, `release()`, `clearFault()`. |
+| io | `ioCoil` (OUT bool): the coil drive. An io server turns it into a pin write — `examples/SolenoidDeviceDemo/DemoIoServer.h`. |
 | State | Offline before `begin()`; Busy while energized; Errored after a cutoff; Idle otherwise. |
 | Errors | `ERR_NOT_ONLINE` — a command before `begin()`: **reported but not latched**. `ERR_ON_TIME_EXCEEDED` — coil held past `cnfMaxOnTimeMs`: **force-released and latched** until Clear fault. Both kinds of `reportError()` use, side by side. |
-| Platform independence | The class never touches a pin or a clock. Both come in through `SolenoidPort { writeCoil, nowMs, ctx }` — `digitalWrite()`/`millis()` on Arduino, a fake with a hand-advanced clock in `tests/test_solenoid_device.cpp`. Same class, unmodified, on both. |
+| Platform independence | The class never touches a pin or a clock: the coil is io, time is `t`. The desktop test hands it times and reads `ioCoil`; nothing is faked. |
 
 `examples/SolenoidDeviceDemo` exercises every row of that table on hardware, with the sink
 printing to Serial. It needs no wiring — `LED_BUILTIN` is the coil. To drive a real
@@ -223,46 +236,49 @@ public:
         (1, ERR_OVERTEMP, "Over temperature"))
 
     //           type     name          unit     min     max     default     enum
-    UDI_MOUNT   (uint8_t, cnfPin,       NO_UNIT, NO_MIN, 53,     NO_DEFAULT, NO_ENUM)
     UDI_SETUP_CB(float,   cnfMaxTempC,  "degC",  0,      150,    80,         NO_ENUM)
     UDI_W       (float,   wSetpointC,   "degC",  0,      150,    0,          NO_ENUM)
     UDI_R       (float,   rTempC,       "degC",  NO_MIN, NO_MAX, 0,          NO_ENUM)
     UDI_R       (uint8_t, rError,       NO_UNIT, NO_MIN, NO_MAX, ERR_NONE,   enumHeaterError)
+    UDI_IN      (float,   ioTempC,      "degC",  NO_MIN, NO_MAX, 0,          NO_ENUM)   // from the io server
+    UDI_OUT     (float,   ioDuty,       NO_UNIT, 0,      1,      0,          NO_ENUM)   // to the io server
 
-    explicit Heater(HeaterPort port) : port_(port) {}    // injected hardware only
+    bool begin() override { ioDuty.UpdateValue(0.0f); rState.UpdateValue(ST_IDLE); return true; }
 
-    bool begin() override { ...; rState.UpdateValue(ST_IDLE); return true; }
-    void update() override { rTempC.UpdateValue(port_.read()); ... }
+    void update(const UdiTime& t) override {             // the scan: inputs + requests -> outputs
+        rTempC.UpdateValue(ioTempC);
+        ioDuty.UpdateValue(control(wSetpointC.GetFloat(), rTempC.GetFloat(), t.dtUs));
+    }
 
-    bool Set_wSetpointC(const UdiAttr& c) {               // required: it is a w
+    bool Set_wSetpointC(const UdiAttr& c) {               // required: it is a w. Latch only.
         if (c.GetFloat() > cnfMaxTempC.GetFloat()) return false;   // refuse
         wSetpointC.UpdateValue(c);                        // accept: store it yourself
         return true;
     }
-    bool Set_cnfMaxTempC(const UdiAttr& c) { cnfMaxTempC.UpdateValue(c); ...; return true; }
-private:
-    HeaterPort port_;
+    bool Set_cnfMaxTempC(const UdiAttr& c) { cnfMaxTempC.UpdateValue(c); return true; }
 };
 ```
 
 1. `UDI_DEVICE(Self, "TypeName")` first in the class body.
 2. One line per attribute. The name carries the class prefix; the type is fixed-width
-   (`bool`, `u/int8..32_t`, `float`, `double`); `NO_MIN` / `NO_MAX` / `NO_DEFAULT` /
-   `NO_UNIT` / `NO_ENUM` where a property doesn't apply. A mount attribute without a default
-   must be configured before `begin()`.
-3. `begin()` brings the hardware to a known-safe state and sets `rState` to `ST_IDLE` (or
-   returns false and stays `ST_OFFLINE`). Update `rState` and your own attributes wherever
-   they change, with `UpdateValue()`, following `ST_OFFLINE` > `ST_ERRORED` > `ST_BUSY` >
-   `ST_IDLE`.
-4. A `Set_` for every `w` and every `_CB` cnf: store with `UpdateValue()` and return true
-   to accept, return false to refuse.
-5. `reportError(rError)` when something goes wrong (or `reportError(rError, ERR_X)` for a
-   diagnostic you don't store). It never changes anything: whether a fault latches is your
-   separate `UpdateValue()`.
-6. Devices you own as members: `UDI_CHILD(member)`. Deriving from another declared device:
+   (`bool`, `u/int8..32_t`, `float`, `double`), or text with the `_STR` macros
+   (`(name, capacity, "default" | NO_TEXT)`); `NO_MIN` / `NO_MAX` / `NO_DEFAULT` /
+   `NO_UNIT` / `NO_ENUM` where a property doesn't apply.
+3. **No hardware in the device.** Every pin, bus or sensor value is an io attribute; an io
+   server device does the access. The constructor takes nothing that is configuration:
+   that is a mount attribute (read once at boot; without a default it must be
+   configured, and `begin()` should fail without it).
+4. `begin()` brings the outputs to a known-safe state and sets `rState` to `ST_IDLE` (or
+   returns false and stays `ST_OFFLINE`).
+5. A `Set_` for every `w` and every `UDI_SETUP_CB`: validate and **latch** — store with
+   `UpdateValue()` and return true, or return false to refuse. No hardware, no time.
+6. `update(const UdiTime& t)` **acts**: requests and io inputs become io outputs, r values,
+   timestamps (`t.us`) and `rState` (`ST_OFFLINE` > `ST_ERRORED` > `ST_BUSY` > `ST_IDLE`).
+   A parent passes `t` to the children it drives.
+7. `reportError(rError)` when something goes wrong (or `reportError(rError, ERR_X)` for a
+   diagnostic you don't store). It never changes anything.
+8. Devices you own as members: `UDI_CHILD(member)`. Deriving from another declared device:
    `UDI_DEVICE_EXTENDS(Self, Base, "TypeName")`.
-7. Keep hardware I/O injected (as `SolenoidDevice` does with `SolenoidPort`) or in an
-   Arduino-only backend `.cpp`. Override `update()` / `end()` only if needed.
 
 ---
 
@@ -303,7 +319,7 @@ UDI_ENUM(enumDeviceState, (0, ST_OFFLINE, "Offline"), (1, ST_IDLE, "Idle"),
 class IDevice {
 public:
     virtual bool begin() = 0;                 // the only required override
-    virtual void update() {}                  // optional
+    virtual void update(const UdiTime& t) {}  // the scan; optional
     virtual void end() {}                     // optional teardown
 
     void describe(IDescriber& d);             // rState, then everything declared
@@ -322,6 +338,30 @@ protected:
 
 Devices have no instance name of their own: a parent names its children (`UDI_CHILD(left)`
 is "left") and the application names the root.
+
+### The scan, time and threads
+
+Every period the runtime copies io links in, calls `update(t)` on the tree, and copies io
+links out — the PLC input / logic / output cycle. `UdiTime` is sampled once per period
+(64-bit µs, monotonic) from whatever drives the loop: UDF's tick source, or a sketch's
+`UdiClockWidener` over `micros()`.
+
+Callbacks only latch, so a runtime may choose *when* they run without devices noticing. On
+a microcontroller writes are applied in the scan. On an OS the framework may apply w and
+cnf writes immediately from another thread (the writer gets accept/refuse at once) while
+io stays in the scan; it guarantees that no callback runs at the same time as any
+`update` of its device tree, so devices contain no locks.
+
+### Configuration: mount and setup
+
+- **mount** — read once, before `begin()`; never changes while running; no callback. On a
+  microcontroller the firmware is the configuration (the declared default, or the sketch
+  sets it before `begin()`). On an OS the framework keeps every cnf by path in a config
+  file in a data folder: created when missing, updated when the device tree changes, a
+  mount written at runtime is saved as *pending until restart*.
+- **setup** — takes effect immediately (stored, or handed to the `UDI_SETUP_CB` callback);
+  on an OS also saved to the config file. At boot, file values are applied like ordinary
+  writes, callbacks included, before `begin()`.
 
 ### The record: `Attr`
 
@@ -421,17 +461,19 @@ run `.vscode/build-debug.bat`, which configures with NMake from a VS developer s
   (`MockSolenoid`, `MockCurrentSensor`): `reportError()` dispatch (type name / source / code
   / text / userContext), one sink registration serving both device types, uninstall,
   `rState` through a bare `IDevice*`, unlisted codes, a device with no declarations.
-- `tests/test_solenoid_device.cpp` — the shipped `SolenoidDevice` against a fake
-  `SolenoidPort` with a hand-advanced clock, commanded through `wCommand`'s callback the way
-  the framework does: missing mount config, rejected-before-`begin()` (reported, not
-  latched), the protective cutoff (latched, reported once, coil forced off), recovery,
-  `millis()` wrap-around, no sink installed.
+- `tests/test_solenoid_device.cpp` — the shipped `SolenoidDevice` with hand-made times and
+  nothing faked, commanded through `wCommand`'s callback the way the framework does:
+  missing mount config, refused-before-`begin()` (reported, not latched), latch then act,
+  last request wins, the protective cutoff in µs (latched, reported once, `ioCoil` off),
+  recovery, a run across 2^32 µs.
+- `tests/test_time.cpp` — `UdiClockWidener`: first sample, the 32-bit wrap, many wraps.
 - `tests/test_describe.cpp` — what the declarations generate: `rState` on every device, the
   records in declaration order with types, units, limits, defaults and enumerations (gaps
-  and negatives), callbacks accepting and refusing, `_CB` vs plain cnf, `UDI_CHILD`,
+  and negatives), callbacks accepting and refusing, `_CB` vs plain cnf, text attributes,
+  `update(t)` through a parent to its children, `UDI_CHILD`,
   `UDI_DEVICE_EXTENDS`, and `UdiAttr`'s conversions and metadata.
-- `tests/compile_fail/` — sources that must **not** compile: a `w` without `Set_`, a `_CB`
-  without `Set_`, a wrong prefix, an enumeration not named `enum...`, a non-fixed-width
+- `tests/compile_fail/` — sources that must **not** compile: a `w` without `Set_` (numeric
+  or text), a `_CB` without `Set_`, a `UDI_MOUNT_CB` (mounts have no callback), a wrong prefix, an enumeration not named `enum...`, a non-fixed-width
   type, a redeclared `rState`. Each passes only when the compiler's message names the rule.
   (Locally with NMake, run `ctest` from a VS developer shell so it can rebuild them.)
 

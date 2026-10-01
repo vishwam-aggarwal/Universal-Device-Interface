@@ -8,36 +8,31 @@
 // library. Deliberately NON-motion: a solenoid (or relay, or an LED
 // standing in for one) is just a coil you switch on and off.
 //
+// It is PURE LOGIC. It touches no pin and reads no clock: the coil is
+// its io OUT ioCoil, which an io server device turns into a pin write
+// (examples/SolenoidDeviceDemo/DemoIoServer.h), and time arrives in
+// update(t). The identical class therefore runs on any board, on an OS,
+// and in the desktop test with nothing faked.
+//
 // What it demonstrates -- all an implementer writes:
 //   * UDI_DEVICE, its enumerations and one declaration per attribute.
-//     No describe code, no getters, no string tables.
-//   * begin()/update(), updating rState by the OFFLINE > ERRORED > BUSY
-//     > IDLE precedence rule and its own rError.
-//   * The required Set_wCommand() for its one w attribute.
+//   * Set_wCommand() LATCHES: it accepts or refuses the command and
+//     remembers it. update(t) ACTS: it drives ioCoil, records the time
+//     and updates rState, rError and rEnergized.
 //   * Both kinds of reportError(): a NON-sticky diagnostic
-//     (ERR_NOT_ONLINE -- rejected and reported, but nothing latches) and
-//     a STICKY fault (ERR_ON_TIME_EXCEEDED -- the protective cutoff
+//     (ERR_NOT_ONLINE -- refused and reported, nothing latches) and a
+//     STICKY fault (ERR_ON_TIME_EXCEEDED -- the protective cutoff
 //     latches ST_ERRORED until a ClearFault command).
-//   * Configuration lives in its attribute: cnfMaxOnTimeMs is set
-//     before begin() (by the framework, or a sketch with UpdateValue()),
-//     never copied in through the constructor. Without it begin() fails.
-//   * Platform independence through injection: hardware I/O and time
-//     come in through SolenoidPort, so the same class runs against
-//     digitalWrite()/millis() on Arduino and a fake port in the test.
+//   * Configuration lives in its attribute: cnfMaxOnTimeMs is a mount
+//     value, set before begin() (by the framework, or a sketch with
+//     UpdateValue()), never copied in through the constructor. Without
+//     it begin() fails.
 //
 // The real-world concern it models: most solenoids are rated for
 // intermittent duty. Holding the coil energized past its rated on-time
 // overheats it, so the device enforces a maximum continuous on-time and
 // force-releases the coil (and faults) if a caller forgets to.
 // ==================================================================
-
-// Hardware/time port. Fill in with digitalWrite()/millis() on Arduino, or
-// with a fake on desktop. `ctx` is handed back to both callbacks untouched.
-struct SolenoidPort {
-    void     (*writeCoil)(bool energized, void* ctx);
-    uint32_t (*nowMs)(void* ctx);
-    void*    ctx;
-};
 
 class SolenoidDevice : public IDevice {
 public:
@@ -55,8 +50,8 @@ public:
         (2, ERR_ON_TIME_EXCEEDED, "Coil held past max on-time; force-released"))
 
     //        type      name            unit     min     max     default     enum
-    // The coil's rated on-time: given at boot, never changed while
-    // running, only stored. No default: it must be configured.
+    // The coil's rated on-time: read once at boot, only stored. No
+    // default: it must be configured.
     UDI_MOUNT(uint32_t, cnfMaxOnTimeMs, "ms",    1,      NO_MAX, NO_DEFAULT, NO_ENUM)
     // A request. It keeps the last command written, which is not always
     // what happened (the cutoff releases the coil on its own).
@@ -64,29 +59,49 @@ public:
     UDI_R    (uint8_t,  rError,         NO_UNIT, NO_MIN, NO_MAX, ERR_NONE,   enumSolenoidError)
     // THE TRUTH about the coil: a w attribute is a request, r is the state.
     UDI_R    (bool,     rEnergized,     NO_UNIT, NO_MIN, NO_MAX, false,      NO_ENUM)
-
-    // Hardware only; both function pointers must be non-null.
-    explicit SolenoidDevice(const SolenoidPort& port) : port_(port) {}
+    // The coil drive, for the io server.
+    UDI_OUT  (bool,     ioCoil,         NO_UNIT, NO_MIN, NO_MAX, false,      NO_ENUM)
 
     // ------------------------------------------------------------
     // Lifecycle
     // ------------------------------------------------------------
     bool begin() override {
-        port_.writeCoil(false, port_.ctx);              // known-safe state first
+        ioCoil.UpdateValue(false);                      // known-safe output first
         rEnergized.UpdateValue(false);
+        pending_ = CMD_NONE;
         if (cnfMaxOnTimeMs.Get() == 0) return false;    // not configured: stay OFFLINE
         rError.UpdateValue(ERR_NONE);
         rState.UpdateValue(ST_IDLE);                    // last: online only once it is safe
         return true;
     }
 
-    // Protective cutoff. Call regularly (every loop()) while the device is
-    // in use -- an energized coil is only safe as long as this keeps running.
-    void update() override {
-        if (!rEnergized.Get()) return;
-        if (elapsedMs(port_.nowMs(port_.ctx), energizedAtMs_) >= static_cast<uint32_t>(cnfMaxOnTimeMs.Get())) {
-            port_.writeCoil(false, port_.ctx);
-            rEnergized.UpdateValue(false);
+    // The scan: apply the latched command, then the protective cutoff.
+    // Call it every period -- an energized coil is only safe as long as
+    // this keeps running.
+    void update(const UdiTime& t) override {
+        if (rState.Get() == ST_OFFLINE) return;
+        uint8_t cmd = pending_;
+        pending_ = CMD_NONE;
+        switch (cmd) {
+            case CMD_ENERGIZE:
+                if (rError.Get() == ERR_NONE && !rEnergized.Get()) {   // a fault may have latched since
+                    energizedAtUs_ = t.us;
+                    drive(true);
+                }
+                break;
+            case CMD_RELEASE:
+                if (rEnergized.Get()) drive(false);
+                break;
+            case CMD_CLEAR_FAULT:
+                rError.UpdateValue(ERR_NONE);
+                rState.UpdateValue(rEnergized.Get() ? ST_BUSY : ST_IDLE);
+                break;
+            default:
+                break;
+        }
+        uint64_t limitUs = static_cast<uint64_t>(static_cast<uint32_t>(cnfMaxOnTimeMs.Get())) * 1000u;
+        if (rEnergized.Get() && t.us - energizedAtUs_ >= limitUs) {
+            drive(false);
             rError.UpdateValue(ERR_ON_TIME_EXCEEDED);   // sticky: latched until ClearFault
             rState.UpdateValue(ST_ERRORED);
             reportError(rError);
@@ -94,61 +109,54 @@ public:
     }
 
     // ------------------------------------------------------------
-    // The w callback: runs the command just written
+    // The w callback: accept or refuse, and latch
     // ------------------------------------------------------------
     bool Set_wCommand(const UdiAttr& c) {
+        if (!accept(static_cast<uint8_t>(c.Get()))) return false;
         wCommand.UpdateValue(c);
-        switch (c.Get()) {
-            case CMD_ENERGIZE:    return energize();
-            case CMD_RELEASE:     release(); return true;
-            case CMD_CLEAR_FAULT: return clearFault();
-            default:              return true;          // None: nothing to run
-        }
-    }
-
-    // ------------------------------------------------------------
-    // The same actions as C++ methods, for code that holds the device
-    // ------------------------------------------------------------
-    bool energize() {
-        if (rState.Get() == ST_OFFLINE) {
-            reportError(rError, ERR_NOT_ONLINE);        // diagnostic only, nothing latches
-            return false;
-        }
-        if (rError.Get() != ERR_NONE) return false;     // already reported when it latched
-        if (rEnergized.Get()) return true;              // idempotent: the timer keeps running
-        energizedAtMs_ = port_.nowMs(port_.ctx);
-        port_.writeCoil(true, port_.ctx);
-        rEnergized.UpdateValue(true);
-        rState.UpdateValue(ST_BUSY);
         return true;
     }
 
-    void release() {
-        if (!rEnergized.Get()) return;
-        port_.writeCoil(false, port_.ctx);
-        rEnergized.UpdateValue(false);
-        rState.UpdateValue(ST_IDLE);                    // energized implies online and not faulted
-    }
+    // The same requests as C++ methods, for code that holds the device.
+    // They latch exactly like a write to wCommand; update(t) acts.
+    bool energize()   { return accept(CMD_ENERGIZE); }
+    bool release()    { return accept(CMD_RELEASE); }
+    bool clearFault() { return accept(CMD_CLEAR_FAULT); }
 
-    // Recovery out of ST_ERRORED. The coil is already off by the time any
-    // fault latches, so this only clears the latch.
-    bool clearFault() {
-        if (rState.Get() == ST_OFFLINE) return false;
-        rError.UpdateValue(ERR_NONE);
-        rState.UpdateValue(ST_IDLE);
-        return true;
-    }
-
-    // How long the coil has been energized right now (0 when it isn't).
-    uint32_t getOnTimeMs() const {
-        return rEnergized.Get() ? elapsedMs(port_.nowMs(port_.ctx), energizedAtMs_) : 0;
-    }
+    // When the coil was last energized, on the scan's clock.
+    uint64_t getEnergizedAtUs() const { return energizedAtUs_; }
 
 private:
-    // Unsigned subtraction so a millis() wrap (every ~49.7 days) still
-    // yields the right elapsed value.
-    static uint32_t elapsedMs(uint32_t now, uint32_t since) { return now - since; }
+    // Latches c if it can run; the last request before update(t) wins.
+    bool accept(uint8_t c) {
+        switch (c) {
+            case CMD_ENERGIZE:
+                if (rState.Get() == ST_OFFLINE) {
+                    reportError(rError, ERR_NOT_ONLINE);   // diagnostic only, nothing latches
+                    return false;
+                }
+                if (rError.Get() != ERR_NONE) return false;  // already reported when it latched
+                break;
+            case CMD_CLEAR_FAULT:
+                if (rState.Get() == ST_OFFLINE) return false;
+                break;
+            case CMD_RELEASE:
+            case CMD_NONE:
+                break;
+            default:
+                return false;
+        }
+        if (c != CMD_NONE) pending_ = c;
+        return true;
+    }
 
-    SolenoidPort port_;
-    uint32_t     energizedAtMs_ = 0;
+    // energized implies online and not faulted, so the state follows it.
+    void drive(bool on) {
+        ioCoil.UpdateValue(on);
+        rEnergized.UpdateValue(on);
+        rState.UpdateValue(on ? ST_BUSY : ST_IDLE);
+    }
+
+    uint64_t energizedAtUs_ = 0;
+    uint8_t  pending_       = CMD_NONE;
 };

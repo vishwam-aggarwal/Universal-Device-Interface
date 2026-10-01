@@ -21,13 +21,22 @@
 // written in: classes, types, numbers, enumerations and flash text.
 //
 // Five classes. The name of every attribute starts with its prefix:
-//   cnf (mount) -- set once, before begin(): pins, bus addresses, gear
-//                  ratios. Refused once the device is running.
-//   cnf (setup) -- configuration that may change at runtime, but never
-//                  while the device is BUSY: speed limits, gains.
+//   cnf (mount) -- read ONCE, at boot, before begin(): pins, ports, bus
+//                  addresses, gear ratios. Never changes while running
+//                  and has no callback; a new value takes effect at the
+//                  next start. On a microcontroller the firmware is the
+//                  configuration (the default, or the sketch sets it
+//                  before begin()); on an OS the framework reads it from
+//                  a config file.
+//   cnf (setup) -- configuration that takes effect immediately at
+//                  runtime (never while the device is BUSY): speed
+//                  limits, gains. Stored, or handed to a callback.
 //   w           -- a request, written from outside while running.
 //   r           -- computed by the device; nobody else writes it.
-//   io          -- process data, exchanged every period through a link.
+//   io          -- process data, exchanged every period through a link,
+//                  in the scan. ALL hardware access lives behind io: a
+//                  device's logic writes io OUT and reads io IN, and an
+//                  io server device does the actual pin/bus access.
 //                  Direction is from the device's point of view: IN is
 //                  read by the device, OUT is written by it.
 //
@@ -42,6 +51,16 @@
 // and returns whether it accepted it. Without a hook the framework
 // stores the value. A write is an event: an accepted write runs the
 // hook even when the value did not change.
+//
+// SET_ LATCHES, UPDATE ACTS. A callback only validates and latches the
+// request: it is fast and non-blocking, touches no hardware and takes
+// no timestamp. Requests and inputs become outputs, timestamps and new
+// state only in update(const UdiTime&). This is what lets a runtime
+// choose WHEN callbacks run: on a microcontroller writes are applied in
+// the scan; on an OS they may be applied immediately from another
+// thread. Either way the runtime guarantees a callback never runs at the
+// same time as any update() of its device tree, so devices need no
+// locks. io is always exchanged in the scan.
 //
 // Plain C++11, no Arduino dependency, no heap.
 //
@@ -125,22 +144,26 @@ enum class AttrDir : uint8_t {
 };
 
 // The C types an attribute may hold. Fixed widths, so a value means the
-// same thing on AVR, ARM and Linux when it crosses a wire.
-enum class AttrType : uint8_t { BOOL, U8, I8, U16, I16, U32, I32, F32, F64 };
+// same thing on AVR, ARM and Linux when it crosses a wire. STR is text
+// of a fixed capacity, in a buffer inside the device (no heap).
+enum class AttrType : uint8_t { BOOL, U8, I8, U16, I16, U32, I32, F32, F64, STR };
 
 inline bool attrTypeIsReal(AttrType t)   { return t == AttrType::F32 || t == AttrType::F64; }
 inline bool attrTypeIsSigned(AttrType t) { return t == AttrType::I8 || t == AttrType::I16 || t == AttrType::I32; }
+inline bool attrTypeIsText(AttrType t)   { return t == AttrType::STR; }
 
 // One value, a limit or a default, in the attribute's own kind of number
 // so an i32 stays exact and a float is not rounded. Which member is
 // valid follows the attribute's type: u for BOOL and the unsigned types,
-// i for the signed ones, f for F32, d for F64. The constexpr makers let
-// a declaration's limits and default be built at compile time, in flash.
+// i for the signed ones, f for F32, d for F64, s for STR (the device's
+// own buffer, null-terminated). The constexpr makers let a declaration's
+// limits and default be built at compile time, in flash.
 union AttrNumber {
     uint32_t u;
     int32_t  i;
     float    f;
     double   d;
+    char*    s;
 
     constexpr AttrNumber() : d(0.0) {}   // all bytes zero, on every platform
 
@@ -242,8 +265,9 @@ struct Attr {
     AttrNumber*     value;         // the attribute's value, in its own form
     const AttrText* unit;          // "ms", "rad"; nullptr when unitless
     AttrNumber      minimum;
-    AttrNumber      maximum;
+    AttrNumber      maximum;       // for STR: the capacity in characters (u)
     AttrNumber      defaultValue;  // used when nothing configured the value
+    const AttrText* defaultText;   // STR only: the default text (HAS_DEFAULT)
     const AttrEnum* enumDef;       // nullptr: NO_ENUM
     AttrWriteHook   writeHook;     // {nullptr, nullptr}: the framework stores
 
@@ -298,6 +322,7 @@ inline const char* attrTypeToString(AttrType type) {
         case AttrType::I32:  return "i32";
         case AttrType::F32:  return "f32";
         case AttrType::F64:  return "f64";
+        case AttrType::STR:  return "str";
         default:             return "?";
     }
 }

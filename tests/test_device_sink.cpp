@@ -247,7 +247,7 @@ int main() {
         MockCurrentSensor sensor;
         sensor.begin();
         IDevice& d = sensor;
-        d.update();
+        d.update(UdiTime{0, 0, 0});
         check(d.rState.Get() == ST_IDLE, "update() on a device that doesn't override it changes nothing");
     }
 

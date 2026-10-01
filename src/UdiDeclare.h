@@ -30,9 +30,12 @@
 //     type name is what the error sink receives as typeName.
 //   * Names carry their class: cnf (UDI_MOUNT, UDI_SETUP), w (UDI_W),
 //     r (UDI_R), io (UDI_IN, UDI_OUT). rState is IDevice's own.
-//   * Every UDI_W needs `bool Set_<name>(const UdiAttr&)`. A cnf gets
-//     one only when declared with UDI_MOUNT_CB / UDI_SETUP_CB, which
-//     then require it too. A callback receives the checked incoming
+//   * Every UDI_W needs `bool Set_<name>(const UdiAttr&)`. A setup cnf
+//     gets one only when declared with UDI_SETUP_CB, which then
+//     requires it too. A mount cnf never has one: it is read once, at
+//     boot, before begin(), and never changes while running.
+//   * SET_ LATCHES, UPDATE ACTS (Attr.h): a callback validates and
+//     latches; outputs, timestamps and state change in update(t). A callback receives the checked incoming
 //     value, stores it itself (UpdateValue) if it accepts it, and
 //     returns whether it did.
 //   * Types are fixed-width (bool, u/int8..32_t, float, double).
@@ -229,7 +232,7 @@ template <class S, int N> struct Each<S, N, N> {
             ::udi::numberOf(static_cast<T*>(nullptr), lo),                                 \
             ::udi::numberOf(static_cast<T*>(nullptr), hi),                                 \
             ::udi::numberOf(static_cast<T*>(nullptr), def),                                \
-            &udiEnum_##E, setfn };                                                         \
+            nullptr, &udiEnum_##E, setfn };                                                         \
         return &udiI_;                                                                     \
     }
 
@@ -256,8 +259,6 @@ template <class S, int N> struct Each<S, N, N> {
     UDI_SETTER_(name) UDI_ATTR_("w", W, NONE, T, name, unit, lo, hi, def, E, &udiSet_##name)
 #define UDI_MOUNT(T, name, unit, lo, hi, def, E)                                           \
     UDI_ATTR_("cnf", MOUNT, NONE, T, name, unit, lo, hi, def, E, nullptr)
-#define UDI_MOUNT_CB(T, name, unit, lo, hi, def, E)                                        \
-    UDI_SETTER_(name) UDI_ATTR_("cnf", MOUNT, NONE, T, name, unit, lo, hi, def, E, &udiSet_##name)
 #define UDI_SETUP(T, name, unit, lo, hi, def, E)                                           \
     UDI_ATTR_("cnf", SETUP, NONE, T, name, unit, lo, hi, def, E, nullptr)
 #define UDI_SETUP_CB(T, name, unit, lo, hi, def, E)                                        \
@@ -266,6 +267,42 @@ template <class S, int N> struct Each<S, N, N> {
     UDI_ATTR_("io", IO, IN, T, name, unit, lo, hi, def, E, nullptr)
 #define UDI_OUT(T, name, unit, lo, hi, def, E)                                             \
     UDI_ATTR_("io", IO, OUT, T, name, unit, lo, hi, def, E, nullptr)
+
+// ------------------------------------------------------------------
+// Text attributes: (name, capacity, "default" | NO_TEXT). The text lives
+// in a buffer of capacity+1 bytes inside the device; NO_TEXT means no
+// default (a mount without one must be configured).
+// ------------------------------------------------------------------
+#define NO_TEXT ""
+
+#define UDI_STR_(prefix, cls, dir, name, cap, def, setfn)                                 \
+    static_assert(::udi::hasPrefix(#name, prefix), "UDI: attribute " #name " must be named " prefix "..."); \
+    static_assert((cap) > 0 && (cap) < 65535, "UDI: text attribute " #name " needs a capacity of 1..65534"); \
+    static_assert(sizeof(def) - 1 <= (cap), "UDI: the default of " #name " is longer than its capacity"); \
+    UDI_ITEM_INDEX_(name)                                                                  \
+    static const UdiAttrInfo* udiInfo_##name() {                                           \
+        static constexpr char udiN_[] PROGMEM = #name;                                     \
+        static constexpr char udiD_[] PROGMEM = def;                                       \
+        static constexpr UdiAttrInfo udiI_ PROGMEM = {                                     \
+            udiN_, nullptr, AttrClass::cls, AttrDir::dir, AttrType::STR,                       \
+            static_cast<uint8_t>(Attr::HAS_MAX | (sizeof(def) > 1 ? Attr::HAS_DEFAULT : 0)), \
+            AttrNumber(), AttrNumber::ofU(cap), AttrNumber(), udiD_,                       \
+            &udiEnum_NO_ENUM, setfn };                                                     \
+        return &udiI_;                                                                     \
+    }                                                                                      \
+    char udiBuf_##name[(cap) + 1];                                                         \
+    UdiAttr name{udiInfo_##name(), udiBuf_##name};                                         \
+    static void udiItem_(::udi::Index<udiIdx_##name>, UdiSelf* s, IDescriber& d) {         \
+        d.attr(s->name.Describe(s));                                                       \
+    }
+
+#define UDI_R_STR(name, cap, def)        UDI_STR_("r", R, NONE, name, cap, def, nullptr)
+#define UDI_W_STR(name, cap, def)        UDI_SETTER_(name) UDI_STR_("w", W, NONE, name, cap, def, &udiSet_##name)
+#define UDI_MOUNT_STR(name, cap, def)    UDI_STR_("cnf", MOUNT, NONE, name, cap, def, nullptr)
+#define UDI_SETUP_STR(name, cap, def)    UDI_STR_("cnf", SETUP, NONE, name, cap, def, nullptr)
+#define UDI_SETUP_STR_CB(name, cap, def) UDI_SETTER_(name) UDI_STR_("cnf", SETUP, NONE, name, cap, def, &udiSet_##name)
+#define UDI_IN_STR(name, cap, def)       UDI_STR_("io", IO, IN, name, cap, def, nullptr)
+#define UDI_OUT_STR(name, cap, def)      UDI_STR_("io", IO, OUT, name, cap, def, nullptr)
 
 // A device this one owns (a member), listed as the child named after it.
 #define UDI_CHILD(member)                                                                  \
