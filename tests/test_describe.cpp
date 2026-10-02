@@ -58,13 +58,14 @@ static UdiTime atMs(uint64_t ms) { UdiTime t; t.us = ms * 1000u; t.dtUs = 0; t.c
 // Declares nothing: only begin(). It must still describe its rState.
 class BareDevice : public IDevice {
 public:
+    const char* udiName() const override { return "bare"; }   // the one thing it must write
     bool begin() override { rState.UpdateValue(ST_IDLE); return true; }
 };
 
 // Every kind of declaration, with an enumeration that has gaps.
 class Box : public IDevice {
 public:
-    UDI_DEVICE(Box, "Box")
+    UDI_DEVICE(Box, "box")
 
     UDI_ENUM(enumBoxMode,
         (0,  MODE_OFF,  "Off"),
@@ -120,14 +121,14 @@ public:
 // Derives from a declared device and adds its own attribute.
 class BigBox : public Box {
 public:
-    UDI_DEVICE_EXTENDS(BigBox, Box, "BigBox")
+    UDI_DEVICE_EXTENDS(BigBox, Box, "big")
     UDI_R(uint32_t, rCount, NO_UNIT, NO_MIN, NO_MAX, 7, NO_ENUM)
 };
 
 // Owns two devices by composition and lists them as children.
 class TwoLatchBoard : public IDevice {
 public:
-    UDI_DEVICE(TwoLatchBoard, "Board")
+    UDI_DEVICE(TwoLatchBoard, "board")
     SolenoidDevice left, right;
     UDI_CHILD(left)
     UDI_CHILD(right)
@@ -140,6 +141,17 @@ public:
     }
     // A parent passes the period's time on to the children it drives.
     void update(const UdiTime& t) override { left.update(t); right.update(t); }
+};
+
+// Hosts a device it did not choose (as a framework hosts an application)
+// and lists it under the device's own name.
+class Host : public IDevice {
+public:
+    UDI_DEVICE(Host, "host")
+    IDevice& guest;
+    UDI_CHILD_OWN_NAME(guest)
+    explicit Host(IDevice& g) : guest(g) {}
+    bool begin() override { return guest.begin(); }
 };
 
 int main() {
@@ -271,7 +283,8 @@ int main() {
         dev.update(atMs(7));
         check(box.lastUpdateUs == 7000,                               "update(t) dispatches with the period's time");
         dev.end();
-        check(box.ended && streq(dev.udiTypeName(), "Box"),           "end() dispatches; type name from UDI_DEVICE");
+        check(box.ended && streq(dev.udiTypeName(), "Box") && streq(dev.udiName(), "box"),
+              "end() dispatches; type is the class name, name from UDI_DEVICE");
     }
 
     {
@@ -281,7 +294,8 @@ int main() {
         big.describe(rec);
         check(rec.attrCount == 14,                                    "rState + Box's twelve + its own");
         check(textIs(rec.attrs[1].name, "cnfPin") && textIs(rec.attrs[13].name, "rCount"), "base first, own last");
-        check(rec.attrs[13].value->u == 7 && streq(big.udiTypeName(), "BigBox"), "own default and type name");
+        check(rec.attrs[13].value->u == 7 && streq(big.udiTypeName(), "BigBox") && streq(big.udiName(), "big"),
+              "own default, type and name");
     }
 
     {
@@ -292,6 +306,13 @@ int main() {
         check(rec.childCount == 2 && rec.attrCount == 2,              "two children, rState + one io");
         check(streq(rec.childNames[0], "left") && rec.children[0] == &board.left,   "child 0 is named after the member");
         check(streq(rec.childNames[1], "right") && rec.children[1] == &board.right, "child 1 too");
+        check(streq(board.left.udiName(), "solenoid"),                               "the parent's name wins over the device's own");
+
+        Host host(board);
+        RecordingDescriber hostRec;
+        host.describe(hostRec);
+        check(hostRec.childCount == 1 && streq(hostRec.childNames[0], "board") && hostRec.children[0] == &board,
+              "UDI_CHILD_OWN_NAME lists a child under its own name");
         RecordingDescriber grandchild;
         rec.children[0]->describe(grandchild);
         check(grandchild.attrCount == 6,                              "walking into a child reaches its attributes");

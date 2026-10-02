@@ -11,7 +11,7 @@
 //
 //   class SolenoidDevice : public IDevice {
 //   public:
-//       UDI_DEVICE(SolenoidDevice, "Solenoid")
+//       UDI_DEVICE(SolenoidDevice, "solenoid")
 //
 //       UDI_ENUM(enumSolenoidCommand,
 //           (0, CMD_NONE,     "None"),
@@ -26,8 +26,11 @@
 //   };
 //
 // RULES, all checked at compile time:
-//   * UDI_DEVICE(Self, "TypeName") comes first in the class body. The
-//     type name is what the error sink receives as typeName.
+//   * UDI_DEVICE(Self, "name") comes first in the class body. "name" is
+//     the device's own name, used when it is the top of a tree; a parent
+//     that mounts it names it instead (UDI_CHILD). It is not empty and
+//     has no '/' or '.'. The type is the class name, Self: what the
+//     error sink receives as typeName.
 //   * Names carry their class: cnf (UDI_MOUNT, UDI_SETUP), w (UDI_W),
 //     r (UDI_R), io (UDI_IN, UDI_OUT). rState is IDevice's own.
 //   * Every UDI_W needs `bool Set_<name>(const UdiAttr&)`. A setup cnf
@@ -82,6 +85,11 @@ constexpr bool hasPrefix(const char* s, const char* p) {
 constexpr bool sameText(const char* a, const char* b) {
     return *a == *b && (*a == '\0' || sameText(a + 1, b + 1));
 }
+// A device name: not empty, and no '/' or '.' (they separate a path).
+constexpr bool namePartOk(const char* s) {
+    return *s == '\0' ? true : (*s != '/' && *s != '.' && namePartOk(s + 1));
+}
+constexpr bool validName(const char* s) { return *s != '\0' && namePartOk(s); }
 
 // A declared limit or default, in the union member of the attribute's type.
 template <typename V> constexpr AttrNumber num(bool*, V v)     { return AttrNumber::ofU(v ? 1u : 0u); }
@@ -192,24 +200,26 @@ template <class S, int N> struct Each<S, N, N> {
 // ------------------------------------------------------------------
 // The device
 // ------------------------------------------------------------------
-#define UDI_DEVICE_COMMON_(Self, TypeName)                                                 \
+#define UDI_DEVICE_COMMON_(Self, Name)                                                     \
+    static_assert(::udi::validName(Name), "UDI: device name " #Name " must not be empty or contain '/' or '.'"); \
     typedef Self UdiSelf;                                                                  \
     static ::udi::Num<0> udiCount_(::udi::Rank<0>);                                        \
     template <class, int, int> friend struct ::udi::Each;                                  \
-    const char* udiTypeName() const override { return TypeName; }
+    const char* udiName() const override { return Name; }                                  \
+    const char* udiTypeName() const override { return #Self; }
 
 #define UDI_DEVICE_ITEMS_(d)                                                               \
     ::udi::Each<UdiSelf, 0, decltype(udiCount_(::udi::Rank<UDI_MAX_ITEMS>()))::value>::run(this, d)
 
-// UDI_DEVICE(Self, "TypeName") -- first in the class body.
-#define UDI_DEVICE(Self, TypeName)                                                         \
-    UDI_DEVICE_COMMON_(Self, TypeName)                                                     \
+// UDI_DEVICE(Self, "name") -- first in the class body.
+#define UDI_DEVICE(Self, Name)                                                             \
+    UDI_DEVICE_COMMON_(Self, Name)                                                         \
     void describeSelf(IDescriber& d) override { UDI_DEVICE_ITEMS_(d); }
 
 // For a device that derives from another declared device: the base's
 // attributes come first.
-#define UDI_DEVICE_EXTENDS(Self, Base, TypeName)                                           \
-    UDI_DEVICE_COMMON_(Self, TypeName)                                                     \
+#define UDI_DEVICE_EXTENDS(Self, Base, Name)                                               \
+    UDI_DEVICE_COMMON_(Self, Name)                                                         \
     void describeSelf(IDescriber& d) override { Base::describeSelf(d); UDI_DEVICE_ITEMS_(d); }
 
 // ------------------------------------------------------------------
@@ -309,4 +319,13 @@ template <class S, int N> struct Each<S, N, N> {
     UDI_ITEM_INDEX_(member)                                                                \
     static void udiItem_(::udi::Index<udiIdx_##member>, UdiSelf* s, IDescriber& d) {       \
         d.child(#member, s->member);                                                       \
+    }
+
+// A device this one hosts without naming it (a member or a reference),
+// listed under its own name, udiName(): for a framework device that
+// mounts an application it did not choose.
+#define UDI_CHILD_OWN_NAME(member)                                                         \
+    UDI_ITEM_INDEX_(member)                                                                \
+    static void udiItem_(::udi::Index<udiIdx_##member>, UdiSelf* s, IDescriber& d) {       \
+        d.child(s->member.udiName(), s->member);                                           \
     }

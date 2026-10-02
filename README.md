@@ -233,7 +233,7 @@ directly.
 ```cpp
 class Heater : public IDevice {
 public:
-    UDI_DEVICE(Heater, "Heater")                         // first: the type name
+    UDI_DEVICE(Heater, "heater")                         // first: its own name
 
     UDI_ENUM(enumHeaterError,
         (0, ERR_NONE,     "No error"),
@@ -263,7 +263,8 @@ public:
 };
 ```
 
-1. `UDI_DEVICE(Self, "TypeName")` first in the class body.
+1. `UDI_DEVICE(Self, "name")` first in the class body: the device's own name (not empty,
+   no `/` or `.`, checked at compile time). Its type is the class name.
 2. One line per attribute. The name carries the class prefix; the type is fixed-width
    (`bool`, `u/int8..32_t`, `float`, `double`), or text with the `_STR` macros
    (`(name, capacity, "default" | NO_TEXT)`); `NO_MIN` / `NO_MAX` / `NO_DEFAULT` /
@@ -281,8 +282,10 @@ public:
    A parent passes `t` to the children it drives.
 7. `reportError(rError)` when something goes wrong (or `reportError(rError, ERR_X)` for a
    diagnostic you don't store). It never changes anything.
-8. Devices you own as members: `UDI_CHILD(member)`. Deriving from another declared device:
-   `UDI_DEVICE_EXTENDS(Self, Base, "TypeName")`.
+8. Devices you own as members: `UDI_CHILD(member)`, named after the member. A device you
+   host without naming it (a framework hosting an application): `UDI_CHILD_OWN_NAME(member)`,
+   listed under its own name. Deriving from another declared device:
+   `UDI_DEVICE_EXTENDS(Self, Base, "name")`.
 
 ---
 
@@ -327,7 +330,8 @@ public:
     virtual void end() {}                     // optional teardown
 
     void describe(IDescriber& d);             // rState, then everything declared
-    virtual const char* udiTypeName() const;  // from UDI_DEVICE
+    virtual const char* udiName() const = 0;  // its own name, from UDI_DEVICE
+    virtual const char* udiTypeName() const;  // its class name, from UDI_DEVICE
 
     UdiAttr rState;                           // u8, enumDeviceState, starts ST_OFFLINE
 
@@ -340,8 +344,9 @@ protected:
 };
 ```
 
-Devices have no instance name of their own: a parent names its children (`UDI_CHILD(left)`
-is "left") and the application names the root.
+Every device names itself (`UDI_DEVICE(Self, "name")`); a device without a name does not
+compile. A parent that mounts a device names it instead (`UDI_CHILD(left)` is "left"), so
+the device's own name is what it is called at the top of a tree.
 
 ### The scan, time and threads
 
@@ -409,8 +414,8 @@ typedef void (*GlobalErrorSink)(const char* typeName, const IDevice* source,
                                 void* userContext);
 ```
 
-Installed **once** with `IDevice::setGlobalErrorSink(sink, userContext)`. `typeName` comes
-from `UDI_DEVICE`; `source` is the device, which a tree-aware sink maps to its path.
+Installed **once** with `IDevice::setGlobalErrorSink(sink, userContext)`. `typeName` is the
+device's class name, from `UDI_DEVICE`; `source` is the device, which a tree-aware sink maps to its path.
 `errorString` is the value's description from the attribute's enumeration (or
 `"Unknown error"`), copied out of flash into a buffer on the reporting device's stack, so
 it is **valid only during the call**: a sink that keeps it must copy it.

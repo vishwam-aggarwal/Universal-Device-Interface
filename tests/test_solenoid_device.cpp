@@ -90,7 +90,7 @@ int main() {
 
         check(!writeCommand(r.sol, SolenoidDevice::CMD_ENERGIZE),         "Energize refused while OFFLINE");
         check(cap.calls == 1 && cap.errorCode == SolenoidDevice::ERR_NOT_ONLINE, "ERR_NOT_ONLINE reported through the sink");
-        check(streq(cap.typeName, "Solenoid") && cap.source == &r.sol,    "typeName from UDI_DEVICE, source is the device");
+        check(streq(cap.typeName, "SolenoidDevice") && cap.source == &r.sol, "typeName is the class name, source is the device");
         check(streq(cap.errorString, "Command rejected: begin() not called"), "errorString is the description from rError's enum");
         check(r.sol.rError.Get() == SolenoidDevice::ERR_NONE && r.sol.rState.Get() == ST_OFFLINE,
               "non-sticky: rError and rState untouched");
@@ -189,7 +189,8 @@ int main() {
         Rig r;
         IDevice* d = &r.sol;
         check(d->begin() && d->rState.Get() == ST_IDLE,                   "begin() via IDevice*");
-        check(streq(d->udiTypeName(), "Solenoid"),                        "udiTypeName() via IDevice*");
+        check(streq(d->udiTypeName(), "SolenoidDevice"),                  "udiTypeName() via IDevice*");
+        check(streq(d->udiName(), "solenoid"),                            "udiName() via IDevice*");
         r.sol.energize();
         d->update(atMs(0));
         d->update(atMs(1000));

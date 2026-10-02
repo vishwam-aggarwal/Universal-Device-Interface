@@ -15,7 +15,7 @@
 
 class DemoIoServer : public IDevice {
 public:
-    UDI_DEVICE(DemoIoServer, "IoServer")
+    UDI_DEVICE(DemoIoServer, "io")
 
     //        type     name        unit     min     max     default      enum
     UDI_MOUNT(uint8_t, cnfCoilPin, NO_UNIT, NO_MIN, NO_MAX, LED_BUILTIN, NO_ENUM)

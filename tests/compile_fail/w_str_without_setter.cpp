@@ -2,7 +2,7 @@
 #include "IDevice.h"
 class Dev : public IDevice {
 public:
-    UDI_DEVICE(Dev, "Dev")
+    UDI_DEVICE(Dev, "dev")
     UDI_W_STR(wName, 16, NO_TEXT)
     bool begin() override { return true; }
 };
