@@ -2,7 +2,7 @@
 #include "IDevice.h"
 class Dev : public IDevice {
 public:
-    UDI_DEVICE(Dev, "Dev")
+    UDI_DEVICE(Dev, "dev")
     UDI_MOUNT_CB(uint8_t, cnfPin, NO_UNIT, NO_MIN, NO_MAX, 13, NO_ENUM)
     bool Set_cnfPin(const UdiAttr&) { return true; }
     bool begin() override { return true; }

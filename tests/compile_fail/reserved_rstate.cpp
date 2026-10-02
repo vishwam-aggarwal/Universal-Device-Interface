@@ -2,7 +2,7 @@
 #include "IDevice.h"
 class Dev : public IDevice {
 public:
-    UDI_DEVICE(Dev, "Dev")
+    UDI_DEVICE(Dev, "dev")
     UDI_R(uint8_t, rState, NO_UNIT, NO_MIN, NO_MAX, 0, NO_ENUM)
     bool begin() override { return true; }
 };

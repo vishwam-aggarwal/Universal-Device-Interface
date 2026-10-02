@@ -1,9 +1,8 @@
-// MUST NOT COMPILE: an enumeration's name starts with enum.
+// MUST NOT COMPILE: a device name with a '/' (it separates a path).
 #include "IDevice.h"
 class Dev : public IDevice {
 public:
-    UDI_DEVICE(Dev, "dev")
-    UDI_ENUM(Mode, (0, MODE_OFF, "Off"), (1, MODE_ON, "On"))
+    UDI_DEVICE(Dev, "left/arm")
     bool begin() override { return true; }
 };
 int main() { Dev d; return d.begin() ? 0 : 1; }

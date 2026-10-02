@@ -55,7 +55,7 @@ static const char* text(const UdiAttr& a) {
 // ------------------------------------------------------------------
 class MockSolenoid : public IDevice {
 public:
-    UDI_DEVICE(MockSolenoid, "Solenoid")
+    UDI_DEVICE(MockSolenoid, "solenoid")
     UDI_ENUM(enumMockError,
         (0, ERR_NONE,        "No error"),
         (1, ERR_OVERCURRENT, "Coil overcurrent"),
@@ -97,7 +97,7 @@ public:
 // ------------------------------------------------------------------
 class MockCurrentSensor : public IDevice {
 public:
-    UDI_DEVICE(MockCurrentSensor, "Sensor")
+    UDI_DEVICE(MockCurrentSensor, "sensor")
     UDI_ENUM(enumSensorError,
         (0, ERR_NONE,       "No error"),
         (1, ERR_NO_READING, "No reading available"))
@@ -128,6 +128,7 @@ private:
 // Declares nothing: no UDI_DEVICE, only begin(). Still a valid device.
 class SilentDevice : public IDevice {
 public:
+    const char* udiName() const override { return "silent"; }
     bool begin() override { rState.UpdateValue(ST_IDLE); return true; }
 };
 
@@ -153,7 +154,7 @@ int main() {
         sol.injectOvercurrent();
 
         check(cap.calls == 1,                                        "sink called exactly once");
-        check(streq(cap.typeName, "Solenoid"),                       "typeName from UDI_DEVICE");
+        check(streq(cap.typeName, "MockSolenoid"),                   "typeName is the class name, from UDI_DEVICE");
         check(cap.source == &sol,                                    "source is the reporting device");
         check(cap.errorCode == MockSolenoid::ERR_OVERCURRENT,        "errorCode == rError's value");
         check(streq(cap.errorString, "Coil overcurrent"),            "errorString is the value's description");
@@ -172,12 +173,12 @@ int main() {
         sensor.begin();
 
         sol.injectOvercurrent();
-        check(cap.calls == 1 && streq(cap.typeName, "Solenoid") && cap.source == &sol,
+        check(cap.calls == 1 && streq(cap.typeName, "MockSolenoid") && cap.source == &sol,
               "actuator report arrives tagged Solenoid, from the solenoid");
 
         sensor.dropReading();
         sensor.read();
-        check(cap.calls == 2 && streq(cap.typeName, "Sensor") && cap.source == &sensor,
+        check(cap.calls == 2 && streq(cap.typeName, "MockCurrentSensor") && cap.source == &sensor,
               "sensor report arrives at the SAME sink tagged Sensor");
         check(cap.errorCode == MockCurrentSensor::ERR_NO_READING && streq(cap.errorString, "No reading available"),
               "sensor's own error code/text arrive (not the solenoid's)");

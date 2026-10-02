@@ -13,7 +13,7 @@
 // motion devices, and anything built later: an IMU, a current sensor, a
 // solenoid, a safety supervisor, ...).
 //
-// WHAT AN IMPLEMENTER WRITES: UDI_DEVICE(Self, "TypeName"), one
+// WHAT AN IMPLEMENTER WRITES: UDI_DEVICE(Self, "name"), one
 // declaration per attribute (UdiDeclare.h), begin() (and update()/end()
 // if needed), and a Set_ callback for every w attribute and every setup
 // cnf declared with one. Nothing else: the description the framework
@@ -87,8 +87,14 @@ public:
         describeSelf(d);
     }
 
-    // The device's type, from UDI_DEVICE. "" for a device declared
-    // without it.
+    // The device's own name, from UDI_DEVICE: what it is called at the
+    // top of a tree. A parent that mounts it names it instead
+    // (UDI_CHILD(left) is "left"), so a device's place in a tree is its
+    // path, not this. Required: a device without one does not compile.
+    virtual const char* udiName() const = 0;
+
+    // The device's type: its class name, from UDI_DEVICE. "" for a
+    // device declared without it.
     virtual const char* udiTypeName() const { return ""; }
 
     // ------------------------------------------------------------

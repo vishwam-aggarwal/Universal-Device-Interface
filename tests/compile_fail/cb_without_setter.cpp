@@ -2,7 +2,7 @@
 #include "IDevice.h"
 class Dev : public IDevice {
 public:
-    UDI_DEVICE(Dev, "Dev")
+    UDI_DEVICE(Dev, "dev")
     UDI_SETUP_CB(float, cnfGain, NO_UNIT, NO_MIN, NO_MAX, 1.0f, NO_ENUM)
     bool begin() override { return true; }
 };

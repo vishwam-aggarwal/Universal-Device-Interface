@@ -36,7 +36,7 @@
 
 class SolenoidDevice : public IDevice {
 public:
-    UDI_DEVICE(SolenoidDevice, "Solenoid")
+    UDI_DEVICE(SolenoidDevice, "solenoid")
 
     UDI_ENUM(enumSolenoidCommand,
         (0, CMD_NONE,        "None"),

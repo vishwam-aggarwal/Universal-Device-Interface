@@ -8,12 +8,12 @@ class IDevice;
 // IDevice::setGlobalErrorSink(); every device in the whole library
 // family reports through it via the protected IDevice::reportError().
 //
-//   typeName     -- the reporting device's type, from UDI_DEVICE(Self,
-//                   "TypeName") ("Solenoid", "MotorDriver", ...).
-//   source       -- the reporting device itself. Devices have no
-//                   instance name of their own (names come from the
-//                   tree), so a tree-aware sink maps this to its path; a
-//                   simple sink prints typeName.
+//   typeName     -- the reporting device's type: its class name, from
+//                   UDI_DEVICE(Self, "name") ("SolenoidDevice", ...).
+//   source       -- the reporting device itself. Its place in a tree
+//                   is its path (a parent names what it mounts), so a
+//                   tree-aware sink maps this to its path; a simple sink
+//                   prints typeName or source->udiName().
 //   errorCode    -- the reported value of the device's error attribute.
 //   errorString  -- that value's description from the attribute's
 //                   enumeration, or "Unknown error". VALID ONLY DURING
