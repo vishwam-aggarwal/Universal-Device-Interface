@@ -288,7 +288,7 @@ inside a missing `Servo.h`.
 
 | Repo | State |
 |---|---|
-| **Universal-Device-Interface** | Built, green, pushed. `master` @ `dfefa8e`. |
+| **Universal-Device-Interface** | Built, green, pushed. `main` @ `dfefa8e`. |
 | **Universal-Motor-Interface** | ✅ Retrofitted, pushed. `main` @ `e68cbce`. |
 | **Universal-Tool-Interface** | ✅ Retrofitted, pushed. `main` @ `7fda07a`. |
 | **Universal-Motion-Interface** | ✅ Retrofitted, pushed. `main` @ `b1191d5`. 53/53 desktop checks; verified on real UNO R4 WiFi hardware. |
@@ -409,8 +409,8 @@ and will drift. Recorded here so the intent survives between sessions.
   - Real-time constraint intact: `evaluate()` unchanged and still non-virtual, so no new
     dispatch/allocation on the cyclic path; `reportError()` only from `plan()`.
 - GitHub repo: https://github.com/vishwam-aggarwal/Universal-Device-Interface (public,
-  created 2026-08-29, default branch `master`). This is the URL the siblings' `extern/`
-  submodules and PlatformIO `lib_deps` point at.
+  created 2026-08-29, default branch `main`, renamed from `master` 2026-10-02). This is
+  the URL the siblings' `extern/` submodules and PlatformIO `lib_deps` point at.
 
 ### Open follow-ups (optional, nothing is blocked on these)
 
