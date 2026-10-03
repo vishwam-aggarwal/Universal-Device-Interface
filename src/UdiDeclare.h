@@ -18,7 +18,7 @@
 //           (1, CMD_ENERGIZE, "Energize"))
 //
 //       //        type      name            unit     min     max     default     enum
-//       UDI_MOUNT(uint32_t, cnfMaxOnTimeMs, "ms",    1,      NO_MAX, NO_DEFAULT, NO_ENUM)
+//       UDI_SETUP(uint32_t, cnfMaxOnTimeMs, "ms",    1,      NO_MAX, NO_DEFAULT, NO_ENUM)
 //       UDI_W    (uint8_t,  wCommand,       NO_UNIT, NO_MIN, NO_MAX, CMD_NONE,   enumSolenoidCommand)
 //       UDI_R    (bool,     rEnergized,     NO_UNIT, NO_MIN, NO_MAX, false,      NO_ENUM)
 //
@@ -45,8 +45,9 @@
 //   * Enumerations are named enumXxx; their entries are
 //     (number, NAME, "description"). NAME is just a number: compare it
 //     with Get(), store it with UpdateValue().
-//   * min/max may be NO_MIN/NO_MAX, the default NO_DEFAULT (a mount
-//     attribute without a default must be configured), the unit
+//   * min/max may be NO_MIN/NO_MAX, the default NO_DEFAULT (a cnf
+//     attribute, mount or setup, without a default must be configured),
+//     the unit
 //     NO_UNIT, the enumeration NO_ENUM.
 //   * At most UDI_MAX_ITEMS attributes and children per device. They
 //     are described in declaration order.

@@ -175,8 +175,8 @@ attributes.** Decisions, all the user's:
   time work.
 
 **`src/SolenoidDevice.h`** — the template device, pure logic. No constructor arguments;
-`cnfMaxOnTimeMs` (mount, 1..NO_MAX, NO_DEFAULT) must be set before `begin()`, which
-otherwise fails. `Set_wCommand` / `energize()` / `release()` / `clearFault()` accept or
+`cnfMaxOnTimeMs` (setup, 1..NO_MAX, NO_DEFAULT) must be set before `begin()`, which
+otherwise fails; it may change while running (read every period). `Set_wCommand` / `energize()` / `release()` / `clearFault()` accept or
 refuse and latch one pending command (last wins); `update(t)` applies it, records
 `energizedAtUs = t.us`, and cuts the coil at `cnfMaxOnTimeMs * 1000` µs. Both `reportError`
 uses side by side. `ioCoil`, `rEnergized`, `rError`, `rState`.

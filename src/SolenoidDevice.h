@@ -23,10 +23,12 @@
 //     (ERR_NOT_ONLINE -- refused and reported, nothing latches) and a
 //     STICKY fault (ERR_ON_TIME_EXCEEDED -- the protective cutoff
 //     latches ST_ERRORED until a ClearFault command).
-//   * Configuration lives in its attribute: cnfMaxOnTimeMs is a mount
+//   * Configuration lives in its attribute: cnfMaxOnTimeMs is a setup
 //     value, set before begin() (by the framework, or a sketch with
 //     UpdateValue()), never copied in through the constructor. Without
-//     it begin() fails.
+//     it begin() fails. It is a setup, not a mount, because nothing is
+//     built from it: update(t) reads it every period, so a new limit
+//     applies from the next period, to a coil already on as well.
 //
 // The real-world concern it models: most solenoids are rated for
 // intermittent duty. Holding the coil energized past its rated on-time
@@ -50,9 +52,9 @@ public:
         (2, ERR_ON_TIME_EXCEEDED, "Coil held past max on-time; force-released"))
 
     //        type      name            unit     min     max     default     enum
-    // The coil's rated on-time: read once at boot, only stored. No
-    // default: it must be configured.
-    UDI_MOUNT(uint32_t, cnfMaxOnTimeMs, "ms",    1,      NO_MAX, NO_DEFAULT, NO_ENUM)
+    // The coil's rated on-time: read every period, so it may change
+    // while running. No default: it must be configured.
+    UDI_SETUP(uint32_t, cnfMaxOnTimeMs, "ms",    1,      NO_MAX, NO_DEFAULT, NO_ENUM)
     // A request. It keeps the last command written, which is not always
     // what happened (the cutoff releases the coil on its own).
     UDI_W    (uint8_t,  wCommand,       NO_UNIT, NO_MIN, NO_MAX, CMD_NONE,   enumSolenoidCommand)

@@ -191,9 +191,9 @@ int main() {
               "ioCoil is io OUT bool: the hardware lives behind it");
 
         const Attr& cnf = rec.attrs[1];
-        check(cnf.cls == AttrClass::MOUNT && cnf.type == AttrType::U32 && textIs(cnf.unit, "ms"), "cnfMaxOnTimeMs: mount, u32, ms");
+        check(cnf.cls == AttrClass::SETUP && cnf.type == AttrType::U32 && textIs(cnf.unit, "ms"), "cnfMaxOnTimeMs: setup, u32, ms");
         check(cnf.hasMin() && cnf.minimum.u == 1 && !cnf.hasMax() && !cnf.hasDefault(), "1 .. NO_MAX, no default");
-        check(cnf.writeHook.fn == nullptr,                            "plain mount: no callback, the framework stores");
+        check(cnf.writeHook.fn == nullptr,                            "plain setup: no callback, the framework stores");
 
         const Attr& w = rec.attrs[2];
         char name[16];
@@ -204,7 +204,7 @@ int main() {
         check(w.writeHook.fn != nullptr && w.writeHook.ctx == &sol,   "callback wired, with the device as context");
 
         check(frameworkWrite(cnf, AttrNumber::ofU(400)) && sol.cnfMaxOnTimeMs.Get() == 400,
-              "a write to the plain mount is stored by the framework");
+              "a write to the plain setup is stored by the framework");
         check(!frameworkWrite(w, AttrNumber::ofU(SolenoidDevice::CMD_ENERGIZE)) && sol.rState.Get() == ST_OFFLINE,
               "Energize before begin(): Set_wCommand refuses");
         sol.begin();
