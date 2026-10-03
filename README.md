@@ -172,7 +172,7 @@ UdiClockWidener clock;
 void setup() {
     Serial.begin(115200);
     IDevice::setGlobalErrorSink(serialErrorSink);   // ONCE, for every device type
-    latch.cnfMaxOnTimeMs.UpdateValue(2000);         // mount config, before begin()
+    latch.cnfMaxOnTimeMs.UpdateValue(2000);         // setup config, before begin()
     latch.begin();
     io.begin();
     latch.energize();                               // latched; the next scan acts
@@ -211,7 +211,7 @@ it overheats).
 
 | | |
 |---|---|
-| Attributes | `cnfMaxOnTimeMs` (mount u32, ms, 1 .. no max, **no default: must be configured**), `wCommand` (w u8, `enumSolenoidCommand`: None / Energize / Release / Clear fault), `rError` (r u8, `enumSolenoidError`), `rEnergized` (r bool), plus `rState`. |
+| Attributes | `cnfMaxOnTimeMs` (setup u32, ms, 1 .. no max, **no default: must be configured**; may change while running), `wCommand` (w u8, `enumSolenoidCommand`: None / Energize / Release / Clear fault), `rError` (r u8, `enumSolenoidError`), `rEnergized` (r bool), plus `rState`. |
 | Lifecycle | `begin()` sets `ioCoil` off; without `cnfMaxOnTimeMs` it fails and stays Offline, otherwise it goes Idle. `update(t)` applies the latched command and is the protective cutoff — call it every period. |
 | Commands | Through `wCommand` (`Set_wCommand()` accepts or refuses and **latches**; the next `update(t)` acts; the last request in a period wins), or the same requests as C++ methods: `energize()`, `release()`, `clearFault()`. |
 | io | `ioCoil` (OUT bool): the coil drive. An io server turns it into a pin write — `examples/SolenoidDeviceDemo/DemoIoServer.h`. |
