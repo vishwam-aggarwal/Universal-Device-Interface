@@ -5,9 +5,15 @@
 #include <string.h>
 #if defined(__AVR__)
 #include <avr/pgmspace.h>   // avr-libc, not Arduino: flash strings and tables
+// UDI's tables in flash: a separate address space on AVR, read with memcpy_P (udiReadFlash).
+#define UDI_PROGMEM PROGMEM
 #else
+// One address space: "flash" data is ordinary const data. Deliberately NOT the board's PROGMEM:
+// Teensy's is a named section (".progmem"), which GCC refuses for the function-local constexpr
+// tables UDI declares ("section type conflict").
+#define UDI_PROGMEM
 #ifndef PROGMEM
-#define PROGMEM             // one address space: "flash" data is ordinary const data
+#define PROGMEM
 #endif
 #endif
 

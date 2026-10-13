@@ -177,7 +177,7 @@ template <class S, int N> struct Each<S, N, N> {
 // Enumerations
 // ------------------------------------------------------------------
 #define UDI_ENUM_VALUE2_(n, id, text) id = n,
-#define UDI_ENUM_TEXT2_(n, id, text)  static constexpr char udiT_##id[] PROGMEM = text;
+#define UDI_ENUM_TEXT2_(n, id, text)  static constexpr char udiT_##id[] UDI_PROGMEM = text;
 #define UDI_ENUM_ENTRY2_(n, id, text) { n, udiT_##id },
 #define UDI_ENUM_VALUE_(t) UDI_EXPAND_(UDI_ENUM_VALUE2_ t)
 #define UDI_ENUM_TEXT_(t)  UDI_EXPAND_(UDI_ENUM_TEXT2_ t)
@@ -191,9 +191,9 @@ template <class S, int N> struct Each<S, N, N> {
     enum E { UDI_FOR_EACH_(UDI_ENUM_VALUE_, __VA_ARGS__) };                               \
     static inline const AttrEnum* udiEnum_##E() {                                          \
         UDI_FOR_EACH_(UDI_ENUM_TEXT_, __VA_ARGS__)                                         \
-        static constexpr AttrEnumEntry udiEntries_[] PROGMEM = {                           \
+        static constexpr AttrEnumEntry udiEntries_[] UDI_PROGMEM = {                           \
             UDI_FOR_EACH_(UDI_ENUM_ENTRY_, __VA_ARGS__) };                                 \
-        static constexpr AttrEnum udiEnum_ PROGMEM = {                                     \
+        static constexpr AttrEnum udiEnum_ UDI_PROGMEM = {                                     \
             static_cast<uint8_t>(sizeof(udiEntries_) / sizeof(udiEntries_[0])), udiEntries_ }; \
         return &udiEnum_;                                                                  \
     }
@@ -235,9 +235,9 @@ template <class S, int N> struct Each<S, N, N> {
 // IDevice for rState.
 #define UDI_ATTR_INFO_(cls, dir, T, name, unit, lo, hi, def, E, setfn)                    \
     static const UdiAttrInfo* udiInfo_##name() {                                           \
-        static constexpr char udiN_[] PROGMEM = #name;                                     \
-        static constexpr char udiU_[] PROGMEM = unit;                                      \
-        static constexpr UdiAttrInfo udiI_ PROGMEM = {                                     \
+        static constexpr char udiN_[] UDI_PROGMEM = #name;                                     \
+        static constexpr char udiU_[] UDI_PROGMEM = unit;                                      \
+        static constexpr UdiAttrInfo udiI_ UDI_PROGMEM = {                                     \
             udiN_, udiU_, AttrClass::cls, AttrDir::dir, attrTypeOf(static_cast<T*>(nullptr)), \
             ::udi::flagsOf(lo, hi, def),                                                   \
             ::udi::numberOf(static_cast<T*>(nullptr), lo),                                 \
@@ -292,9 +292,9 @@ template <class S, int N> struct Each<S, N, N> {
     static_assert(sizeof(def) - 1 <= (cap), "UDI: the default of " #name " is longer than its capacity"); \
     UDI_ITEM_INDEX_(name)                                                                  \
     static const UdiAttrInfo* udiInfo_##name() {                                           \
-        static constexpr char udiN_[] PROGMEM = #name;                                     \
-        static constexpr char udiD_[] PROGMEM = def;                                       \
-        static constexpr UdiAttrInfo udiI_ PROGMEM = {                                     \
+        static constexpr char udiN_[] UDI_PROGMEM = #name;                                     \
+        static constexpr char udiD_[] UDI_PROGMEM = def;                                       \
+        static constexpr UdiAttrInfo udiI_ UDI_PROGMEM = {                                     \
             udiN_, nullptr, AttrClass::cls, AttrDir::dir, AttrType::STR,                       \
             static_cast<uint8_t>(Attr::HAS_MAX | (sizeof(def) > 1 ? Attr::HAS_DEFAULT : 0)), \
             AttrNumber(), AttrNumber::ofU(cap), AttrNumber(), udiD_,                       \
