@@ -300,8 +300,9 @@ public:
    ```
 10. **`mounted()`**: called after the mounts are applied, before anything is described for a
    client or begun. It is the one place a device may decide its shape from its mounts (a
-   child chosen by a mount). It may be called again while the tree grows, so act on the
-   first call only. No hardware here.
+   child chosen by a mount). The framework calls it exactly once per device, after that
+   device's own mounts are applied (a child it creates gets its own call, after its
+   mounts). No hardware here.
 
 ---
 

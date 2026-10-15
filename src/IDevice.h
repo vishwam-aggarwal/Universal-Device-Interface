@@ -81,12 +81,16 @@ public:
     // units (unitFor) -- before anything is described for a client, linked
     // or begun. It touches no hardware (that is begin()).
     //
-    // The framework calls it on every device of the tree, before begin().
-    // When a call grows the tree (a child chosen by a mount), the
-    // framework applies the new devices' mounts and calls it AGAIN on
-    // every device, until the tree stops growing: so a device acts on its
-    // first call only. Defaults to a no-op.
+    // The framework calls it EXACTLY ONCE on every device of the tree,
+    // after that device's own mounts are applied, before begin(). When a
+    // call grows the tree (a child chosen by a mount), the framework
+    // applies the new devices' mounts and then calls theirs, until the
+    // tree stops growing. Defaults to a no-op.
     virtual void mounted() {}
+
+    // The framework's own bookkeeping for mounted(): the pass in which it
+    // first saw this device (0: not yet). A device never touches it.
+    uint8_t udiMountPass = 0;
 
     // ------------------------------------------------------------
     // Device tree
