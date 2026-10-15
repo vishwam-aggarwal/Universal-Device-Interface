@@ -310,6 +310,9 @@ public:
    `UdiNeeds<Commutation> commutation_{this, j2};`. The framework resolves every handle
    before `begin()`, and a missing one stops the start with the list, so it never fails
    in the middle of a run and the handle is never null once the scan runs. No RTTI.
+12. **Link hooks** (`UdiLink.h`, the framework's business): every attribute has a chain of
+   hooks that runs the moment it is written (every `UpdateValue()`), so a linked value
+   moves on at once instead of at the end of a period. A device does nothing for it.
 
 ---
 

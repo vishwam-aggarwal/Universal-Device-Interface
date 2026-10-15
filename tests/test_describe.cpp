@@ -412,7 +412,7 @@ int main() {
         check(box.wMode.HasCallback() && box.cnfGain.HasCallback() && !box.cnfGear.HasCallback() &&
               !box.cnfOffset.HasCallback() && !box.rMode.HasCallback(),
               "w and _CB have callbacks; mount, plain setup and r do not");
-        check(sizeof(UdiAttr) == sizeof(AttrNumber) + sizeof(void*), "an attribute is its value plus one pointer");
+        check(sizeof(UdiAttr) == sizeof(AttrNumber) + 2 * sizeof(void*), "an attribute is its value plus two pointers (its info, its link chain)");
     }
 
     {

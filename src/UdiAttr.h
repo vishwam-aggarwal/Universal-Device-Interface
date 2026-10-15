@@ -42,14 +42,14 @@ class UdiAttr {
 public:
     // A numeric attribute; the value starts at the declared default
     // (zero when NO_DEFAULT).
-    explicit UdiAttr(const UdiAttrInfo* info) : value_(), info_(info) {
+    explicit UdiAttr(const UdiAttrInfo* info) : value_(), info_(info), links_(nullptr) {
         const UdiAttrInfo& i = load();
         if (i.flags & Attr::HAS_DEFAULT) value_ = i.defaultValue;
     }
 
     // A text attribute over the device's own buffer of capacity+1 bytes;
     // the text starts as the declared default (empty when none).
-    UdiAttr(const UdiAttrInfo* info, char* buffer) : value_(), info_(info) {
+    UdiAttr(const UdiAttrInfo* info, char* buffer) : value_(), info_(info), links_(nullptr) {
         value_.s = buffer;
         const UdiAttrInfo& i = load();
         attrTextCopy(reinterpret_cast<const AttrText*>(i.defaultText), buffer, i.maximum.u + 1);
@@ -57,7 +57,7 @@ public:
 
     // An incoming value for a write callback: this attribute's info, a
     // new value in its own form (for STR, s points at the incoming text).
-    UdiAttr(const UdiAttrInfo* info, const AttrNumber& value) : value_(value), info_(info) {}
+    UdiAttr(const UdiAttrInfo* info, const AttrNumber& value) : value_(value), info_(info), links_(nullptr) {}
 
     // --------------------------------------------------------------
     // The value
@@ -107,7 +107,8 @@ public:
     // The device's own write, converted to the attribute's type (an
     // integer is cut to the type's width, a bool is 0 or 1, text is cut
     // to the capacity). A number does nothing to a text attribute and
-    // text does nothing to a numeric one.
+    // text does nothing to a numeric one. Then the attribute's link
+    // hooks run (UdiLink.h): a linked value moves on at once.
     template <typename V>
     void UpdateValue(V v) { storeInteger(static_cast<int32_t>(v), static_cast<uint32_t>(v)); }
     void UpdateValue(bool v)        { storeInteger(v ? 1 : 0, v ? 1u : 0u); }
@@ -182,6 +183,7 @@ public:
         a.enumDef      = i.enumFn != nullptr ? i.enumFn() : nullptr;
         a.writeHook.fn  = i.set;
         a.writeHook.ctx = i.set != nullptr ? owner : nullptr;
+        a.links         = &links_;
         return a;
     }
 
@@ -215,8 +217,9 @@ private:
             case AttrType::I32:  value_.i = asSigned; break;
             case AttrType::F32:  value_.f = static_cast<float>(asSigned);  break;
             case AttrType::F64:  value_.d = static_cast<double>(asSigned); break;
-            case AttrType::STR:  break;
+            case AttrType::STR:  return;
         }
+        udiFireLinks(links_);
     }
 
     void storeReal(double v) {
@@ -224,12 +227,13 @@ private:
             case AttrType::F32:  value_.f = static_cast<float>(v); break;
             case AttrType::F64:  value_.d = v; break;
             case AttrType::BOOL: value_.u = v != 0.0 ? 1u : 0u; break;
-            case AttrType::STR:  break;
-            default:
+            case AttrType::STR:  return;
+            default:   // storeInteger fires the links
                 if (attrTypeIsSigned(GetType())) storeInteger(static_cast<int32_t>(v), 0);
                 else storeInteger(0, v < 0.0 ? 0u : static_cast<uint32_t>(v));
-                break;
+                return;
         }
+        udiFireLinks(links_);
     }
 
     void storeText(const char* v) {
@@ -240,8 +244,10 @@ private:
             for (; n < i.maximum.u && v[n] != '\0'; ++n) value_.s[n] = v[n];
         }
         value_.s[n] = '\0';
+        udiFireLinks(links_);
     }
 
     AttrNumber         value_;
     const UdiAttrInfo* info_;
+    UdiLinkHook*       links_;     // fired after every write (UdiLink.h)
 };
