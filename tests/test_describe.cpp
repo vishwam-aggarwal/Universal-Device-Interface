@@ -154,8 +154,63 @@ public:
     bool begin() override { return guest.begin(); }
 };
 
+// Chooses its units from a mount, as a motor does: rotary or linear.
+class Axis : public IDevice {
+public:
+    UDI_DEVICE(Axis, "axis")
+
+    UDI_ENUM(enumAxisMotion,
+        (0, MOTION_ROTARY, "Rotary"),
+        (1, MOTION_LINEAR, "Linear"))
+
+    UDI_MOUNT(uint8_t, cnfMotion,   NO_UNIT,      NO_MIN, NO_MAX, MOTION_ROTARY, enumAxisMotion)
+    UDI_R    (float,   rPosition,   "{position}", NO_MIN, NO_MAX, 0.0f,          NO_ENUM)
+    UDI_R    (float,   rVelocity,   "{velocity}", NO_MIN, NO_MAX, 0.0f,          NO_ENUM)
+    UDI_R    (float,   rStrange,    "{nonsense}", NO_MIN, NO_MAX, 0.0f,          NO_ENUM)
+    UDI_R    (float,   rTemperature, "degC",      NO_MIN, NO_MAX, 0.0f,          NO_ENUM)
+
+    bool begin() override { rState.UpdateValue(ST_IDLE); return true; }
+    void mounted() override { ++mountedCalls; }
+
+    int mountedCalls = 0;
+
+protected:
+    const AttrText* unitFor(const AttrText* symbol) const override {
+        const bool linear = cnfMotion.Get() == MOTION_LINEAR;
+        if (unitIs(symbol, "{position}")) return linear ? UDI_TEXT("mm") : UDI_TEXT("rad");
+        if (unitIs(symbol, "{velocity}")) return linear ? UDI_TEXT("mm/s") : UDI_TEXT("rad/s");
+        return nullptr;
+    }
+};
+
 int main() {
     printf("=== declarations / describe() / UdiAttr ===\n\n");
+
+    printf("-- units chosen by the device, mounted() --\n");
+    {
+        Axis axis;
+        RecordingDescriber rotary;
+        axis.describe(rotary);
+        check(rotary.find("rPosition") && textIs(rotary.find("rPosition")->unit, "rad"),     "{position} is rad on a rotary axis");
+        check(rotary.find("rVelocity") && textIs(rotary.find("rVelocity")->unit, "rad/s"),   "{velocity} is rad/s");
+        check(rotary.find("rTemperature") && textIs(rotary.find("rTemperature")->unit, "degC"), "a plain unit is untouched");
+        check(rotary.find("rStrange") && textIs(rotary.find("rStrange")->unit, "{nonsense}"),
+              "a symbol the device does not know is shown as it is");
+        check(textIs(axis.rPosition.GetUnit(), "{position}"),                                  "the declaration keeps the symbol");
+
+        axis.cnfMotion.UpdateValue(Axis::MOTION_LINEAR);   // what the framework's mount write does
+        RecordingDescriber linear;
+        axis.describe(linear);
+        check(linear.find("rPosition") && textIs(linear.find("rPosition")->unit, "mm"),      "and mm once cnfMotion is Linear");
+        check(linear.find("rVelocity") && textIs(linear.find("rVelocity")->unit, "mm/s"),    "mm/s");
+
+        BareDevice bare;
+        bare.mounted();
+        check(true,                                                                            "mounted() defaults to nothing");
+        IDevice& asDevice = axis;
+        asDevice.mounted();
+        check(axis.mountedCalls == 1,                                                          "and is a device's own to override");
+    }
 
     {
         printf("-- 1. a device that declares nothing still serves rState --\n");
