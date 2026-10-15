@@ -62,3 +62,7 @@ udi_compile_fail(needs_non_feature "udiFeatureId")
 add_executable(test_features tests/test_features.cpp)
 target_link_libraries(test_features PRIVATE device)
 add_test(NAME features COMMAND test_features)
+
+add_executable(test_link_hooks tests/test_link_hooks.cpp)
+target_link_libraries(test_link_hooks PRIVATE device)
+add_test(NAME link_hooks COMMAND test_link_hooks)
