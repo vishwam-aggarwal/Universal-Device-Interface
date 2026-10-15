@@ -49,6 +49,10 @@
 //     attribute, mount or setup, without a default must be configured),
 //     the unit
 //     NO_UNIT, the enumeration NO_ENUM.
+//   * A unit in braces, "{position}", is chosen by the device when it
+//     is described (IDevice::unitFor), from its mounts: a motor's
+//     "{position}" is rad or mm. Braces are only allowed around a whole
+//     unit.
 //   * At most UDI_MAX_ITEMS attributes and children per device. They
 //     are described in declaration order.
 //
@@ -91,6 +95,18 @@ constexpr bool namePartOk(const char* s) {
     return *s == '\0' ? true : (*s != '/' && *s != '.' && namePartOk(s + 1));
 }
 constexpr bool validName(const char* s) { return *s != '\0' && namePartOk(s); }
+
+// A unit: plain text with no braces, or a symbol the device chooses at
+// describe time (IDevice::unitFor): "{name}", braces only around it.
+constexpr bool noBraces(const char* s) {
+    return *s == '\0' ? true : (*s != '{' && *s != '}' && noBraces(s + 1));
+}
+constexpr bool symbolRest(const char* s) {
+    return *s == '}' ? s[1] == '\0' : (*s != '\0' && *s != '{' && symbolRest(s + 1));
+}
+constexpr bool validUnit(const char* s) {
+    return *s == '{' ? (s[1] != '}' && symbolRest(s + 1)) : noBraces(s);
+}
 
 // A declared limit or default, in the union member of the attribute's type.
 template <typename V> constexpr AttrNumber num(bool*, V v)     { return AttrNumber::ofU(v ? 1u : 0u); }
@@ -250,11 +266,14 @@ template <class S, int N> struct Each<S, N, N> {
 #define UDI_ATTR_(prefix, cls, dir, T, name, unit, lo, hi, def, E, setfn)                 \
     static_assert(::udi::hasPrefix(#name, prefix), "UDI: attribute " #name " must be named " prefix "..."); \
     static_assert(!::udi::sameText(#name, "rState"), "UDI: rState is IDevice's own attribute"); \
+    static_assert(::udi::validUnit(unit), "UDI: the unit of " #name " must be plain text or one {symbol}"); \
     UDI_ITEM_INDEX_(name)                                                                  \
     UDI_ATTR_INFO_(cls, dir, T, name, unit, lo, hi, def, E, setfn)                        \
     UdiAttr name{udiInfo_##name()};                                                        \
     static void udiItem_(::udi::Index<udiIdx_##name>, UdiSelf* s, IDescriber& d) {         \
-        d.attr(s->name.Describe(s));                                                       \
+        Attr a = s->name.Describe(s);                                                      \
+        s->udiResolveUnit_(a);                                                             \
+        d.attr(a);                                                                         \
     }
 
 // The callback trampoline. Compiled whether or not anything calls it,

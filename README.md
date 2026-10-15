@@ -286,6 +286,23 @@ public:
    host without naming it (a framework hosting an application): `UDI_CHILD_OWN_NAME(member)`,
    listed under its own name. Deriving from another declared device:
    `UDI_DEVICE_EXTENDS(Self, Base, "name")`.
+9. **A unit the device chooses.** A unit in braces, `"{position}"`, is resolved when the
+   device is described: override `unitFor(symbol)` and return the unit for it, decided by
+   a mount (a motor's `cnfMotion` makes `"{position}"` rad or mm). Mounts never change
+   while running, so neither does the unit. An unknown symbol is shown as it is.
+
+   ```cpp
+   UDI_R(float, rPosition, "{position}", NO_MIN, NO_MAX, 0.0f, NO_ENUM)
+   const AttrText* unitFor(const AttrText* s) const override {
+       if (unitIs(s, "{position}")) return cnfMotion.Get() == MOTION_LINEAR ? UDI_TEXT("mm") : UDI_TEXT("rad");
+       return nullptr;
+   }
+   ```
+10. **`mounted()`**: called after the mounts are applied, before anything is described for a
+   client or begun. It is the one place a device may decide its shape from its mounts (a
+   child chosen by a mount). The framework calls it exactly once per device, after that
+   device's own mounts are applied (a child it creates gets its own call, after its
+   mounts). No hardware here.
 
 ---
 

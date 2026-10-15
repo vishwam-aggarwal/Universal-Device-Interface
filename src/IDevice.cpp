@@ -6,3 +6,10 @@
 // IMotorDriver.cpp today.
 GlobalErrorSink IDevice::globalErrorSink_ = nullptr;
 void* IDevice::globalErrorSinkContext_ = nullptr;
+
+// Out of line: one copy for every attribute of every device.
+void IDevice::udiResolveUnit_(Attr& a) const {
+    if (a.unit == nullptr || attrTextChar(a.unit, 0) != '{') return;
+    const AttrText* u = unitFor(a.unit);
+    if (u != nullptr) a.unit = u;
+}
