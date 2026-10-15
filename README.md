@@ -302,6 +302,13 @@ public:
    client or begun. It is the one place a device may decide its shape from its mounts (a
    child chosen by a mount). It may be called again while the tree grows, so act on the
    first call only. No hardware here.
+11. **Features** (`UdiFeature.h`): what one kind of device can do and another cannot (a
+   motor's Commutation, Homing). A feature is a small interface with `UDI_FEATURE(Name)`;
+   a device derives from it and lists it with `UDI_FEATURES(...)` (or
+   `UDI_FEATURES_EXTENDS(Base, ...)`). Code that uses one holds a handle,
+   `UdiNeeds<Commutation> commutation_{this, j2};`. The framework resolves every handle
+   before `begin()`, and a missing one stops the start with the list, so it never fails
+   in the middle of a run and the handle is never null once the scan runs. No RTTI.
 
 ---
 

@@ -57,3 +57,8 @@ udi_compile_fail(no_name           "udiName")
 udi_compile_fail(bad_name          "device name")
 udi_compile_fail(empty_name        "device name")
 udi_compile_fail(bad_unit          "the unit of rSpeed")
+udi_compile_fail(needs_non_feature "udiFeatureId")
+
+add_executable(test_features tests/test_features.cpp)
+target_link_libraries(test_features PRIVATE device)
+add_test(NAME features COMMAND test_features)
