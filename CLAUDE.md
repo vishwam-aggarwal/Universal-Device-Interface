@@ -137,7 +137,21 @@ through the device's `unitFor(symbol)` (`unitIs()` helper); nullptr keeps the sy
 visible. **Owner decision 2026-10-15: UDI goes with UDF and DROPS AVR** (targets: Uno/Nano
 R4, Teensy, RP2040, ESP32); the public Arduino libraries become standalone, AVR-light
 libraries without UDI (Arduino-Motor-Drivers first). The AVR code paths (PROGMEM) stay
-until a PR removes them.
+until a PR removes them. **Features** (`src/UdiFeature.h`, same release): `UDI_FEATURE(Name)`
+gives a feature interface an identity (the address of a function-local static: unique
+across translation units, no RTTI) and a name; `UDI_FEATURES(...)` /
+`UDI_FEATURES_EXTENDS(Base, ...)` generate `IDevice::udiFeature(id)` (public virtual,
+default nullptr; a holder forwards it). `UdiNeeds<F>{owner, from}` is a member handle that
+appends itself to the owner's intrusive list (`IDevice::udiFirstNeed()`, one pointer per
+device, nothing allocated); the framework calls `resolve()` on each before `begin()` and
+refuses to start on any that fails (UDF's job). Tests `test_features` (19),
+compile-fail `needs_non_feature`. **Link hooks** (`src/UdiLink.h`, same release; owner 2026-10-15: links fire
+THE MOMENT a value is written, never at a scan boundary): `UdiLinkHook {fn, ctx, next}`
+chains; every `UdiAttr` has a chain head (`links_`, so an attribute is its value plus TWO
+pointers now) fired after every `UpdateValue()` store; `Attr::links` points at it so a
+framework adds/removes hooks (`udiLinkAdd`/`udiLinkRemove`); a hand-built attribute fires
+its own chain (`udiFireLinks`) or leaves `links` nullptr (it cannot be a link source).
+Tests `test_link_hooks` (13).
 
 **`src/IDescriber.h`** — the visitor `describe()` calls: `child(name, device)` and
 `attr(attr)`. Protected non-virtual destructor, so concrete describers should be `final`.

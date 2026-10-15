@@ -185,9 +185,11 @@ template <class S, int N> struct Each<S, N, N> {
 #define UDI_FE_30_(M, x, ...) M(x) UDI_EXPAND_(UDI_FE_29_(M, __VA_ARGS__))
 #define UDI_FE_31_(M, x, ...) M(x) UDI_EXPAND_(UDI_FE_30_(M, __VA_ARGS__))
 #define UDI_FE_32_(M, x, ...) M(x) UDI_EXPAND_(UDI_FE_31_(M, __VA_ARGS__))
+// UDI_FE_NONE_ is never picked: it only keeps the "..." below from being empty with one
+// argument, which ISO C++11 (-Wpedantic) forbids.
 #define UDI_FE_PICK_(_1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, _13, _14, _15, _16, _17, _18, _19, _20, _21, _22, _23, _24, _25, _26, _27, _28, _29, _30, _31, _32, NAME, ...) NAME
 #define UDI_FOR_EACH_(M, ...) \
-    UDI_EXPAND_(UDI_FE_PICK_(__VA_ARGS__, UDI_FE_32_, UDI_FE_31_, UDI_FE_30_, UDI_FE_29_, UDI_FE_28_, UDI_FE_27_, UDI_FE_26_, UDI_FE_25_, UDI_FE_24_, UDI_FE_23_, UDI_FE_22_, UDI_FE_21_, UDI_FE_20_, UDI_FE_19_, UDI_FE_18_, UDI_FE_17_, UDI_FE_16_, UDI_FE_15_, UDI_FE_14_, UDI_FE_13_, UDI_FE_12_, UDI_FE_11_, UDI_FE_10_, UDI_FE_9_, UDI_FE_8_, UDI_FE_7_, UDI_FE_6_, UDI_FE_5_, UDI_FE_4_, UDI_FE_3_, UDI_FE_2_, UDI_FE_1_)(M, __VA_ARGS__))
+    UDI_EXPAND_(UDI_FE_PICK_(__VA_ARGS__, UDI_FE_32_, UDI_FE_31_, UDI_FE_30_, UDI_FE_29_, UDI_FE_28_, UDI_FE_27_, UDI_FE_26_, UDI_FE_25_, UDI_FE_24_, UDI_FE_23_, UDI_FE_22_, UDI_FE_21_, UDI_FE_20_, UDI_FE_19_, UDI_FE_18_, UDI_FE_17_, UDI_FE_16_, UDI_FE_15_, UDI_FE_14_, UDI_FE_13_, UDI_FE_12_, UDI_FE_11_, UDI_FE_10_, UDI_FE_9_, UDI_FE_8_, UDI_FE_7_, UDI_FE_6_, UDI_FE_5_, UDI_FE_4_, UDI_FE_3_, UDI_FE_2_, UDI_FE_1_, UDI_FE_NONE_)(M, __VA_ARGS__))
 
 // ------------------------------------------------------------------
 // Enumerations

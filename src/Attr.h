@@ -3,6 +3,8 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+
+#include "UdiLink.h"
 #if defined(__AVR__)
 #include <avr/pgmspace.h>   // avr-libc, not Arduino: flash strings and tables
 // UDI's tables in flash: a separate address space on AVR, read with memcpy_P (udiReadFlash).
@@ -276,6 +278,8 @@ struct Attr {
     const AttrText* defaultText;   // STR only: the default text (HAS_DEFAULT)
     const AttrEnum* enumDef;       // nullptr: NO_ENUM
     AttrWriteHook   writeHook;     // {nullptr, nullptr}: the framework stores
+    UdiLinkHook**   links;         // the chain fired when the value is written (UdiLink.h);
+                                   // nullptr: the owner does not report its writes
 
     bool hasMin() const     { return (flags & HAS_MIN) != 0; }
     bool hasMax() const     { return (flags & HAS_MAX) != 0; }

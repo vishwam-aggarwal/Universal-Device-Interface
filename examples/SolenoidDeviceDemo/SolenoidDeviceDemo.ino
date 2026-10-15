@@ -33,7 +33,7 @@ static const uint32_t SAFE_PULSE_MS = 1000;   // a legal pulse, under the limit
 
 SolenoidDevice  latch;
 DemoIoServer    io;
-UdiClockWidener clock;
+UdiClockWidener scanClock;   // not "clock": Teensy's core has a clock() of its own
 
 // ---- The global error sink: one function, one registration, every device ----
 void serialErrorSink(const char* typeName, const IDevice* /*source*/, uint32_t code,
@@ -46,7 +46,7 @@ void serialErrorSink(const char* typeName, const IDevice* /*source*/, uint32_t c
 
 // ---- One scan period ----
 static void scan() {
-    UdiTime t = clock.advance(micros());   // one clock sample for every device
+    UdiTime t = scanClock.advance(micros());   // one clock sample for every device
     latch.update(t);                       // logic
     io.ioCoil.UpdateValue(latch.ioCoil);   // the link: logic's OUT -> server's IN
     io.update(t);                          // hardware
