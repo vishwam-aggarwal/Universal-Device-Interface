@@ -128,8 +128,9 @@ Statics in `src/IDevice.cpp`.
 **v0.9 (2026-10-15): the device's shape from its mounts** (for UDF Motors, plan in
 `UDF_All/UDFMOTOR-PLAN.md`). `virtual void mounted()`: called by the framework after the
 mounts are applied, before describe-for-clients, links, bind and `begin()`; the one place
-a device decides its shape (a child chosen by a mount); may be called again while the
-tree grows, so a device acts on its first call. **Chosen units:** a unit declared in
+a device decides its shape (a child chosen by a mount); called EXACTLY ONCE per device,
+after its own mounts are applied (the framework tracks it in the public `udiMountPass`
+byte; a child created by mounted() gets its call in the next pass, after its mounts). **Chosen units:** a unit declared in
 braces (`"{position}"`, `static_assert`ed `udi::validUnit`, compile-fail `bad_unit`) is
 resolved in each item's describe by `IDevice::udiResolveUnit_` (out of line, in place)
 through the device's `unitFor(symbol)` (`unitIs()` helper); nullptr keeps the symbol
